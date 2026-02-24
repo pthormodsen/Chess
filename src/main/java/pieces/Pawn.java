@@ -13,6 +13,7 @@ public class Pawn extends Piece {
         this.yPos = row * board.tileSize;
         this.isWhite = isWhite;
         this.name = "Pawn";
+        this.value = 1;
 
         this.sprite = sheet.getSubimage(5 * sheetScale, isWhite ? 0 : sheetScale,
                 sheetScale, sheetScale)

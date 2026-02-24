@@ -44,6 +44,7 @@ class BoardTest {
         board.pieceList.add(whiteKing);
         board.pieceList.add(rook);
         board.pieceList.add(blackKing);
+        board.enableManualSetup();
 
         Move castleMove = new Move(board, whiteKing, 6, 7);
         assertTrue(board.isValidMove(castleMove));
@@ -112,6 +113,7 @@ class BoardTest {
         board.pieceList.clear();
         board.pieceList.add(new King(board, whiteCol, whiteRow, true));
         board.pieceList.add(new King(board, blackCol, blackRow, false));
+        board.enableManualSetup();
         return board;
     }
 }

@@ -15,6 +15,7 @@ public class King extends Piece{
         this.yPos = row * board.tileSize;
         this.isWhite = isWhite;
         this.name = "King";
+        this.value = 0;
 
         this.sprite = sheet.getSubimage(0, isWhite ? 0 : sheetScale, sheetScale, sheetScale).getScaledInstance(board.tileSize ,board.tileSize, BufferedImage.SCALE_SMOOTH);
     }

@@ -13,6 +13,7 @@ public class Queen extends Piece {
         this.yPos = row * board.tileSize;
         this.isWhite = isWhite;
         this.name = "Queen";
+        this.value = 9;
 
         this.sprite = sheet.getSubimage(1 * sheetScale, isWhite ? 0 : sheetScale,
             sheetScale, sheetScale).getScaledInstance(board.tileSize, board.tileSize, BufferedImage.SCALE_SMOOTH);

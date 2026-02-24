@@ -21,6 +21,10 @@ public class Input extends MouseAdapter {
         int col = e.getX() / board.tileSize;
         int row = e.getY() / board.tileSize;
 
+        if(!board.isGameActive()){
+            return;
+        }
+
         if(!board.isInsideBoard(col, row)){
             return;
         }
@@ -34,6 +38,10 @@ public class Input extends MouseAdapter {
 
     @Override
     public void mouseDragged(MouseEvent e) {
+
+        if(!board.isGameActive()){
+            return;
+        }
 
         if(board.selectedPiece != null){
             board.selectedPiece.xPos = e.getX() - board.tileSize / 2;
@@ -49,6 +57,12 @@ public class Input extends MouseAdapter {
 
         int col = e.getX() / board.tileSize;
         int row = e.getY() / board.tileSize;
+
+        if(!board.isGameActive()){
+            board.selectedPiece = null;
+            board.repaint();
+            return;
+        }
 
         if(board.selectedPiece != null){
 

@@ -4,8 +4,18 @@ import pieces.*;
 
 import javax.swing.*;
 import java.awt.*;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.time.Duration;
 import java.util.ArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
+import java.util.function.Consumer;
+
+import uci.StockfishClient;
 
 public class Board extends JPanel {
 
@@ -28,12 +38,88 @@ public class Board extends JPanel {
 
     private boolean isWhiteToMove = true;
     private boolean isGameOver = false;
+    private boolean isGameActive = false;
+
+    private final ArrayList<String> moveHistory = new ArrayList<>();
+    private final ArrayList<String> capturedByWhite = new ArrayList<>();
+    private final ArrayList<String> capturedByBlack = new ArrayList<>();
+    private StockfishClient stockfishClient;
+    private ExecutorService engineExecutor;
+    private boolean engineEnabled = false;
+    private boolean engineIsWhite = false;
+    private int engineSkillLevel = 8;
+    private Duration engineThinkTime = Duration.ofMillis(700);
+    private Consumer<String> statusConsumer;
+    private Consumer<String> gameEndConsumer;
+    private Consumer<String> evaluationConsumer;
+    private java.util.function.BiConsumer<String, String> captureConsumer;
+
 
     public Board() {
         this.setPreferredSize(new Dimension(cols * tileSize, rows * tileSize));
         this.addMouseListener(input);
         this.addMouseMotionListener(input);
         loadPositionFromFEN(fenStartingPosition);
+        initializeEngineIntegration();
+    }
+
+    public void setStatusConsumer(Consumer<String> consumer){
+        this.statusConsumer = consumer;
+    }
+
+    public void setGameEndConsumer(Consumer<String> consumer){
+        this.gameEndConsumer = consumer;
+    }
+
+    public void setEvaluationConsumer(Consumer<String> consumer){
+        this.evaluationConsumer = consumer;
+    }
+
+    public void setCaptureConsumer(java.util.function.BiConsumer<String, String> consumer){
+        this.captureConsumer = consumer;
+    }
+
+    public boolean isGameActive(){
+        return isGameActive;
+    }
+
+    public void startNewGame(){
+        loadPositionFromFEN(fenStartingPosition);
+        isGameActive = true;
+        if(statusConsumer != null){
+            statusConsumer.accept("Game started. White to move.");
+        }
+        if(stockfishClient != null){
+            try{
+                stockfishClient.newGame();
+            } catch (IOException e){
+                System.err.println("Unable to reset engine: " + e.getMessage());
+            }
+        }
+        capturedByWhite.clear();
+        capturedByBlack.clear();
+        notifyCaptures();
+        if(engineIsWhite){
+            requestEngineMoveIfNeeded();
+        }
+        notifyEvaluation();
+        repaint();
+    }
+
+    public void enableManualSetup(){
+        isGameActive = true;
+        isGameOver = false;
+    }
+
+    public void setEngineSkillLevel(int level) {
+        this.engineSkillLevel = Math.max(0, Math.min(20, level));
+        if (stockfishClient != null) {
+            try {
+                stockfishClient.setSkillLevel(engineSkillLevel);
+            } catch (IOException e) {
+                System.err.println("Unable to update engine skill: " + e.getMessage());
+            }
+        }
     }
 
     public Piece getPiece(int col, int row){
@@ -48,6 +134,9 @@ public class Board extends JPanel {
     }
 
     public void makeMove(Move move){
+        if(!isGameActive){
+            return;
+        }
 
         if(move.piece.name.equals("Pawn")){
             movePawn(move);
@@ -64,11 +153,17 @@ public class Board extends JPanel {
 
             capture(move.capture);
 
+            recordMove(move);
+
             isWhiteToMove = !isWhiteToMove;
 
             lastMove = move;
 
             updateGameState();
+
+            requestEngineMoveIfNeeded();
+            notifyEvaluation();
+            repaint();
     }
 
     private void moveKing(Move move){
@@ -113,10 +208,23 @@ public class Board extends JPanel {
 
     private void promotePawn(Move move) {
         pieceList.add(new Queen(this, move.newCol, move.newRow, move.piece.isWhite));
-        capture(move.piece);
+        removePiece(move.piece);
     }
 
     public void capture(Piece piece){
+        if(piece == null){
+            return;
+        }
+        if(piece.isWhite){
+            capturedByBlack.add(pieceIcon(piece));
+        } else {
+            capturedByWhite.add(pieceIcon(piece));
+        }
+        removePiece(piece);
+        notifyCaptures();
+    }
+
+    private void removePiece(Piece piece){
         pieceList.remove(piece);
     }
 
@@ -175,6 +283,11 @@ public class Board extends JPanel {
 
     public void loadPositionFromFEN(String fenString){
         pieceList.clear();
+        moveHistory.clear();
+        lastMove = null;
+        isGameOver = false;
+        capturedByWhite.clear();
+        capturedByBlack.clear();
         String[] parts = fenString.split(" ");
 
         String position = parts[0];
@@ -238,20 +351,128 @@ public class Board extends JPanel {
         } else {
             enPassantTile = (7 - (parts[3].charAt(1) - '1')) * 8 + (parts[3].charAt(0) - 'a');
         }
+        notifyCaptures();
+        notifyEvaluation();
     }
 
     private void updateGameState(){
+        if(!isGameActive){
+            return;
+        }
+
         Piece king = findKing(isWhiteToMove);
         if(checkScanner.isGameOver(king)){
+            String message;
             if(checkScanner.isKingChecked(new Move(this, king, king.col, king.row))){
-                System.out.println(isWhiteToMove ? "Black wins!" : "White wins!");
+                message = isWhiteToMove ? "Black wins!" : "White wins!";
             } else {
-                System.out.println("Stalemate");
+                message = "Stalemate!";
             }
-            isGameOver = true;
+            finishGame(message);
         } else if (insufficientMaterial(true) && insufficientMaterial(false)) {
-            System.out.println("Insufficient material!");
-            isGameOver = true;
+            finishGame("Draw: Insufficient material!");
+        } else if(statusConsumer != null){
+            statusConsumer.accept(isWhiteToMove ? "White to move" : "Black to move");
+        }
+    }
+
+    private void finishGame(String message){
+        isGameOver = true;
+        isGameActive = false;
+        if(statusConsumer != null){
+            statusConsumer.accept(message);
+        }
+        if(gameEndConsumer != null){
+            gameEndConsumer.accept(message);
+        }
+        notifyEvaluation();
+    }
+
+    private void notifyEvaluation(){
+        if(evaluationConsumer == null){
+            return;
+        }
+        int whiteScore = materialScore(true);
+        int blackScore = materialScore(false);
+        int diff = whiteScore - blackScore;
+        String evaluationText;
+        if(diff > 0){
+            evaluationText = "White +" + diff;
+        } else if(diff < 0){
+            evaluationText = "Black +" + Math.abs(diff);
+        } else {
+            evaluationText = "Material even";
+        }
+        evaluationConsumer.accept(evaluationText);
+    }
+
+    private int materialScore(boolean forWhite){
+        return pieceList.stream()
+            .filter(p -> p.isWhite == forWhite)
+            .mapToInt(p -> p.value)
+            .sum();
+    }
+
+    private void notifyCaptures(){
+        if(captureConsumer == null){
+            return;
+        }
+        captureConsumer.accept(formatCapturedList(capturedByWhite), formatCapturedList(capturedByBlack));
+    }
+
+    private String formatCapturedList(ArrayList<String> captured){
+        if(captured.isEmpty()){
+            return "-";
+        }
+        return captured.stream()
+            .sorted(this::compareSymbols)
+            .collect(java.util.stream.Collectors.joining(" "));
+    }
+
+    private int compareSymbols(String a, String b){
+        return Integer.compare(symbolValue(b), symbolValue(a));
+    }
+
+    private int symbolValue(String symbol){
+        switch (symbol){
+            case "♕":
+            case "♛":
+                return 9;
+            case "♖":
+            case "♜":
+                return 5;
+            case "♗":
+            case "♝":
+            case "♘":
+            case "♞":
+                return 3;
+            case "♙":
+            case "♟":
+                return 1;
+            default:
+                return 0;
+        }
+    }
+
+    private String pieceIcon(Piece piece){
+        if(piece == null){
+            return "";
+        }
+        switch (piece.name){
+            case "Queen":
+                return piece.isWhite ? "♕" : "♛";
+            case "Rook":
+                return piece.isWhite ? "♖" : "♜";
+            case "Bishop":
+                return piece.isWhite ? "♗" : "♝";
+            case "Knight":
+                return piece.isWhite ? "♘" : "♞";
+            case "Pawn":
+                return piece.isWhite ? "♙" : "♟";
+            case "King":
+                return piece.isWhite ? "♔" : "♚";
+            default:
+                return "";
         }
     }
 
@@ -333,6 +554,117 @@ public class Board extends JPanel {
         //Painting each piece
         for(Piece piece : pieceList){
             piece.paint(g2d);
+        }
+    }
+
+
+    private void initializeEngineIntegration(){
+        String configuredPath = System.getenv("STOCKFISH_PATH");
+        if(configuredPath == null){
+            configuredPath = System.getProperty("stockfish.path");
+        }
+        if(configuredPath == null){
+            return;
+        }
+
+        Path enginePath = Paths.get(configuredPath);
+        if(!Files.exists(enginePath)){
+            System.err.println("Stockfish engine not found at " + enginePath.toAbsolutePath());
+            return;
+        }
+
+        try{
+            stockfishClient = new StockfishClient(enginePath);
+            stockfishClient.setSkillLevel(engineSkillLevel);
+            engineExecutor = Executors.newSingleThreadExecutor();
+            engineEnabled = true;
+            engineIsWhite = false;
+            System.out.println("Stockfish ready on path " + enginePath.toAbsolutePath());
+        } catch (IOException e){
+            System.err.println("Unable to start Stockfish: " + e.getMessage());
+        }
+    }
+
+    private void requestEngineMoveIfNeeded(){
+        if(!engineEnabled || stockfishClient == null || engineExecutor == null || !isGameActive){
+            return;
+        }
+        if(isGameOver){
+            shutdownEngine();
+            return;
+        }
+        if(isWhiteToMove != engineIsWhite){
+            return;
+        }
+        final String moves = String.join(" ", moveHistory);
+        engineExecutor.submit(() -> {
+            try{
+                String uciMove = stockfishClient.requestBestMove(moves, engineThinkTime);
+                if(uciMove != null){
+                    SwingUtilities.invokeLater(() -> applyUciMove(uciMove));
+                }
+            } catch (IOException e){
+                System.err.println("Engine failure: " + e.getMessage());
+            }
+        });
+    }
+
+    private void applyUciMove(String uciMove){
+        Move engineMove = createMoveFromUci(uciMove);
+        if(engineMove != null && isValidMove(engineMove)){
+            makeMove(engineMove);
+        }
+    }
+
+    private Move createMoveFromUci(String uci){
+        if(uci == null || uci.length() < 4){
+            return null;
+        }
+        int fromCol = uci.charAt(0) - 'a';
+        int fromRow = rows - Character.getNumericValue(uci.charAt(1));
+        int toCol = uci.charAt(2) - 'a';
+        int toRow = rows - Character.getNumericValue(uci.charAt(3));
+
+        Piece piece = getPiece(fromCol, fromRow);
+        if(piece == null){
+            return null;
+        }
+        return new Move(this, piece, toCol, toRow);
+    }
+
+    private void recordMove(Move move){
+        moveHistory.add(toUci(move.oldCol, move.oldRow, move.newCol, move.newRow, move.piece));
+    }
+
+    private String toUci(int fromCol, int fromRow, int toCol, int toRow, Piece piece){
+        StringBuilder sb = new StringBuilder();
+        sb.append(squareName(fromCol, fromRow));
+        sb.append(squareName(toCol, toRow));
+        if("Pawn".equals(piece.name)){
+            int promotionRank = piece.isWhite ? 0 : 7;
+            if(toRow == promotionRank){
+                sb.append('q');
+            }
+        }
+        return sb.toString();
+    }
+
+    private String squareName(int col, int row){
+        char file = (char) ('a' + col);
+        int rank = rows - row;
+        return "" + file + rank;
+    }
+
+    private void shutdownEngine(){
+        engineEnabled = false;
+        if(engineExecutor != null){
+            engineExecutor.shutdownNow();
+        }
+        if(stockfishClient != null){
+            try{
+                stockfishClient.close();
+            } catch (IOException ignored){
+            }
         }
     }
 
