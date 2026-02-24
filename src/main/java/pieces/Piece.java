@@ -6,6 +6,7 @@ import javax.imageio.ImageIO;
 import java.awt.*;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
+import java.io.InputStream;
 
 public class Piece {
 
@@ -19,14 +20,21 @@ public class Piece {
     public boolean isFirstMove = true;
 
     BufferedImage sheet;
+    protected int sheetScale;
     {
-        try {
-            sheet = ImageIO.read(ClassLoader.getSystemResourceAsStream("pieces.png"));
+        try (InputStream spriteStream = ClassLoader.getSystemResourceAsStream("pieces.png")) {
+            if(spriteStream == null){
+                throw new IllegalStateException("Unable to locate sprite sheet 'pieces.png' on the classpath.");
+            }
+            sheet = ImageIO.read(spriteStream);
+            if(sheet == null){
+                throw new IllegalStateException("Failed to decode sprite sheet 'pieces.png'.");
+            }
+            sheetScale = sheet.getWidth()/6;
         } catch (IOException e) {
-            e.printStackTrace();
+            throw new IllegalStateException("Failed to load sprite sheet 'pieces.png'.", e);
         }
     }
-    protected int sheetScale = sheet.getWidth()/6;
 
 
     Image sprite;

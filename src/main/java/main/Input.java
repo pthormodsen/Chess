@@ -21,6 +21,10 @@ public class Input extends MouseAdapter {
         int col = e.getX() / board.tileSize;
         int row = e.getY() / board.tileSize;
 
+        if(!board.isInsideBoard(col, row)){
+            return;
+        }
+
         Piece pieceXY = board.getPiece(col,row);
         if(pieceXY != null){
             board.selectedPiece = pieceXY;
@@ -47,17 +51,29 @@ public class Input extends MouseAdapter {
         int row = e.getY() / board.tileSize;
 
         if(board.selectedPiece != null){
+
+            if(!board.isInsideBoard(col, row)){
+                snapBackSelectedPiece();
+                board.selectedPiece = null;
+                board.repaint();
+                return;
+            }
+
             Move move = new Move(board, board.selectedPiece, col, row);
 
             if(board.isValidMove(move)){
                 board.makeMove(move);
             } else {
-                board.selectedPiece.xPos = board.selectedPiece.col * board.tileSize;
-                board.selectedPiece.yPos = board.selectedPiece.row * board.tileSize;
+                snapBackSelectedPiece();
             }
         }
         board.selectedPiece = null;
         board.repaint();
 
+    }
+
+    private void snapBackSelectedPiece(){
+        board.selectedPiece.xPos = board.selectedPiece.col * board.tileSize;
+        board.selectedPiece.yPos = board.selectedPiece.row * board.tileSize;
     }
 }

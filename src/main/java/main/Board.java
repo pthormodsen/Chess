@@ -9,6 +9,8 @@ import java.util.stream.Collectors;
 
 public class Board extends JPanel {
 
+    public String fenStartingPosition = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
     public int tileSize = 85;
     int cols = 8;
     int rows = 8;
@@ -30,7 +32,7 @@ public class Board extends JPanel {
         this.setPreferredSize(new Dimension(cols * tileSize, rows * tileSize));
         this.addMouseListener(input);
         this.addMouseMotionListener(input);
-        addPieces();
+        loadPositionFromFEN(fenStartingPosition);
     }
 
     public Piece getPiece(int col, int row){
@@ -69,15 +71,17 @@ public class Board extends JPanel {
     private void moveKing(Move move){
 
         if(Math.abs(move.piece.col - move.newCol) == 2){
-            Piece rook;
-            if(move.piece.col < move.newCol){
-                rook = getPiece(7, move.piece.row);
-                rook.col = 5;
-            } else {
-                rook = getPiece(0, move.piece.row);
-                rook.col = 3;
+            int rookStartCol = move.piece.col < move.newCol ? 7 : 0;
+            int rookTargetCol = move.piece.col < move.newCol ? 5 : 3;
+
+            Piece rook = getPiece(rookStartCol, move.piece.row);
+            if(rook != null && "Rook".equals(rook.name)){
+                rook.col = rookTargetCol;
+                rook.row = move.piece.row;
+                rook.xPos = rook.col * tileSize;
+                rook.yPos = rook.row * tileSize;
+                rook.isFirstMove = false;
             }
-            rook.xPos = rook.col * tileSize;
         }
 
     }
@@ -162,52 +166,75 @@ public class Board extends JPanel {
         return null;
     }
 
-    public void addPieces(){
-        //Knights
-        pieceList.add(new Knight(this, 1, 0, false));
-        pieceList.add(new Knight(this, 6, 0, false));
-        pieceList.add(new Knight(this, 1, 7, true));
-        pieceList.add(new Knight(this, 6, 7, true));
+    public boolean isInsideBoard(int col, int row){
+        return col >= 0 && col < cols && row >= 0 && row < rows;
+    }
 
-        //Pawns, Black
-        pieceList.add(new Pawn(this, 0, 1, false));
-        pieceList.add(new Pawn(this, 1, 1, false));
-        pieceList.add(new Pawn(this, 2, 1, false));
-        pieceList.add(new Pawn(this, 3, 1, false));
-        pieceList.add(new Pawn(this, 4, 1, false));
-        pieceList.add(new Pawn(this, 5, 1, false));
-        pieceList.add(new Pawn(this, 6, 1, false));
-        pieceList.add(new Pawn(this, 7, 1, false));
-        //white
-        pieceList.add(new Pawn(this, 0, 6, true));
-        pieceList.add(new Pawn(this, 1, 6, true));
-        pieceList.add(new Pawn(this, 2, 6, true));
-        pieceList.add(new Pawn(this, 3, 6, true));
-        pieceList.add(new Pawn(this, 4, 6, true));
-        pieceList.add(new Pawn(this, 5, 6, true));
-        pieceList.add(new Pawn(this, 6, 6, true));
-        pieceList.add(new Pawn(this, 7, 6, true));
+    public void loadPositionFromFEN(String fenString){
+        pieceList.clear();
+        String[] parts = fenString.split(" ");
 
-        //Bishop
-        pieceList.add(new Bishop(this, 2, 0, false));
-        pieceList.add(new Bishop(this, 5, 0, false));
-        pieceList.add(new Bishop(this, 2, 7, true));
-        pieceList.add(new Bishop(this, 5, 7, true));
+        String position = parts[0];
+        int row = 0;
+        int col = 0;
+        for(int i = 0; i < position.length(); i++){
+            char ch = position.charAt(i);
+            if(ch == '/'){
+                row++;
+                col = 0;
+            } else if (Character.isDigit(ch)){
+                col += Character.getNumericValue(ch);
+            } else {
+                boolean isWhite = Character.isUpperCase(ch);
+                char pieceChar = Character.toLowerCase(ch);
 
-        //Rook
-        pieceList.add(new Rook(this, 0, 0, false));
-        pieceList.add(new Rook(this, 7, 0, false));
-        pieceList.add(new Rook(this, 0, 7, true));
-        pieceList.add(new Rook(this, 7, 7, true));
+                switch (pieceChar){
+                    case 'r':
+                        pieceList.add(new Rook(this, col, row, isWhite));
+                        break;
+                    case 'n':
+                        pieceList.add(new Knight(this, col, row, isWhite));
+                        break;
+                    case 'b':
+                        pieceList.add(new Bishop(this, col, row, isWhite));
+                        break;
+                    case 'q':
+                        pieceList.add(new Queen(this, col, row, isWhite));
+                        break;
+                    case 'k':
+                        pieceList.add(new King(this, col, row, isWhite));
+                        break;
+                    case 'p':
+                        pieceList.add(new Pawn(this, col, row, isWhite));
+                }
+                col++;
+            }
+        }
 
-        //King
-        pieceList.add(new King(this, 4, 0, false));
-        pieceList.add(new King(this, 4, 7, true));
+        isWhiteToMove = parts[1].equals("w");
 
-        //Queen
-        pieceList.add(new Queen(this, 3, 0, false));
-        pieceList.add(new Queen(this, 3, 7, true));
+        Piece bqr = getPiece(0,0);
+        if(bqr instanceof Rook){
+            bqr.isFirstMove = parts[2].contains("q");
+        }
+        Piece bkr = getPiece(7,0);
+        if(bkr instanceof Rook){
+            bkr.isFirstMove = parts[2].contains("k");
+        }
+        Piece wqr = getPiece(0,7);
+        if(wqr instanceof Rook){
+            wqr.isFirstMove = parts[2].contains("Q");
+        }
+        Piece wkr = getPiece(7,7);
+        if(wkr instanceof Rook){
+            wkr.isFirstMove = parts[2].contains("K");
+        }
 
+        if(parts[3].equals("-")) {
+            enPassantTile = -1;
+        } else {
+            enPassantTile = (7 - (parts[3].charAt(1) - '1')) * 8 + (parts[3].charAt(0) - 'a');
+        }
     }
 
     private void updateGameState(){
@@ -226,14 +253,42 @@ public class Board extends JPanel {
     }
 
     private boolean insufficientMaterial(boolean isWhite){
-        ArrayList<String> names = pieceList.stream()
-            .filter(p -> p.isWhite == isWhite)
-            .map(p -> p.name)
+        ArrayList<Piece> pieces = pieceList.stream()
+            .filter(p -> p.isWhite == isWhite && !"King".equals(p.name))
             .collect(Collectors.toCollection(ArrayList::new));
-        if(names.contains("Queen") || names.contains("Rook") ||  names.contains("Pawn")){
-            return false;
+
+        for(Piece piece : pieces){
+            if(piece.name.equals("Queen") || piece.name.equals("Rook") || piece.name.equals("Pawn")){
+                return false;
+            }
         }
-        return names.size() < 3;
+
+        if(pieces.isEmpty()){
+            return true;
+        }
+
+        if(pieces.size() == 1){
+            String name = pieces.get(0).name;
+            return name.equals("Bishop") || name.equals("Knight");
+        }
+
+        if(pieces.size() <= 2){
+            boolean allKnights = pieces.stream().allMatch(p -> p.name.equals("Knight"));
+            if(allKnights){
+                return true;
+            }
+        }
+
+        boolean allBishops = pieces.stream().allMatch(p -> p.name.equals("Bishop"));
+        if(allBishops){
+            long distinctColors = pieces.stream()
+                .map(p -> (p.col + p.row) % 2)
+                .distinct()
+                .count();
+            return distinctColors == 1;
+        }
+
+        return false;
     }
 
     @Override
