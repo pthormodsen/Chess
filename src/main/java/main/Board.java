@@ -24,6 +24,7 @@ public class Board extends JPanel {
     public CheckScanner checkScanner = new CheckScanner(this);
 
     public int enPassantTile = -1;
+    private Move lastMove;
 
     private boolean isWhiteToMove = true;
     private boolean isGameOver = false;
@@ -64,6 +65,8 @@ public class Board extends JPanel {
             capture(move.capture);
 
             isWhiteToMove = !isWhiteToMove;
+
+            lastMove = move;
 
             updateGameState();
     }
@@ -252,7 +255,7 @@ public class Board extends JPanel {
         }
     }
 
-    private boolean insufficientMaterial(boolean isWhite){
+    boolean insufficientMaterial(boolean isWhite){
         ArrayList<Piece> pieces = pieceList.stream()
             .filter(p -> p.isWhite == isWhite && !"King".equals(p.name))
             .collect(Collectors.toCollection(ArrayList::new));
@@ -291,6 +294,10 @@ public class Board extends JPanel {
         return false;
     }
 
+    public Move getLastMove(){
+        return lastMove;
+    }
+
     @Override
     public void paintComponent(Graphics g) {
         super.paintComponent(g);
@@ -302,6 +309,12 @@ public class Board extends JPanel {
                 g2d.setColor((c + r) % 2 == 0 ? new Color(240, 217, 181) : new Color(181, 139, 99));
                 g2d.fillRect(c * tileSize, r * tileSize, tileSize, tileSize);
             }
+        }
+
+        if(lastMove != null){
+            g2d.setColor(new Color(246, 246, 105, 160));
+            g2d.fillRect(lastMove.oldCol * tileSize, lastMove.oldRow * tileSize, tileSize, tileSize);
+            g2d.fillRect(lastMove.newCol * tileSize, lastMove.newRow * tileSize, tileSize, tileSize);
         }
 
         //Paint legal moves
