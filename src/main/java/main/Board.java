@@ -539,17 +539,50 @@ public class Board extends JPanel {
             g2d.fillRect(lastMove.newCol * tileSize, lastMove.newRow * tileSize, tileSize, tileSize);
         }
 
-        //Paint legal moves
-        if(selectedPiece != null)
-        for(int r = 0; r < rows; r++){
-            for(int c = 0; c < cols; c++){
-                if(isValidMove(new Move(this, selectedPiece, c, r))){
+        if(selectedPiece != null){
+            g2d.setColor(new Color(255, 255, 140, 160));
+            g2d.fillRect(selectedPiece.col * tileSize, selectedPiece.row * tileSize, tileSize, tileSize);
+        }
 
-                    g2d.setColor(new Color(68,180,57,190));
-                    g2d.fillRect(c * tileSize, r * tileSize, tileSize, tileSize);
+        // Paint legal moves (accurate Chess.com olive tone)
+        if (selectedPiece != null) {
+            Object oldAA = g2d.getRenderingHint(RenderingHints.KEY_ANTIALIASING);
+            g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            Stroke oldStroke = g2d.getStroke();
 
+            final Color moveDot  = new Color(127, 166, 80, 140);  // olive green
+            final Color captureRing = new Color(127, 166, 80, 200);
+
+            for (int r = 0; r < rows; r++) {
+                for (int c = 0; c < cols; c++) {
+                    Move preview = new Move(this, selectedPiece, c, r);
+                    if (isValidMove(preview)) {
+
+                        int x = c * tileSize;
+                        int y = r * tileSize;
+
+                        if (preview.capture == null) {
+                            int diameter = tileSize / 3;
+                            int circleX = x + (tileSize - diameter) / 2;
+                            int circleY = y + (tileSize - diameter) / 2;
+
+                            g2d.setColor(moveDot);
+                            g2d.fillOval(circleX, circleY, diameter, diameter);
+
+                        } else {
+                            int padding = tileSize / 8;
+                            int size = tileSize - padding * 2;
+
+                            g2d.setColor(captureRing);
+                            g2d.setStroke(new BasicStroke(Math.max(2f, tileSize / 12f)));
+                            g2d.drawOval(x + padding, y + padding, size, size);
+                        }
+                    }
                 }
             }
+
+            g2d.setStroke(oldStroke);
+            g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, oldAA);
         }
 
         //Painting each piece
