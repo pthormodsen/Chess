@@ -14,12 +14,16 @@ public class Main {
 
             Board board = new Board();
 
-            String[] skillLabels = {"Skill 0", "Skill 5", "Skill 10", "Skill 15", "Skill 20"};
-            int[] skillValues = {0, 5, 10, 15, 20};
-            JComboBox<String> skillSelect = new JComboBox<>(skillLabels);
-            skillSelect.setSelectedIndex(2);
+            int[] eloValues = {800, 1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 2800};
+            JComboBox<String> skillSelect = new JComboBox<>();
+            for (int elo : eloValues) {
+                skillSelect.addItem("Elo " + elo);
+            }
+            int defaultIndex = 2; // 1200
+            skillSelect.setSelectedIndex(defaultIndex);
+            board.setEngineElo(eloValues[defaultIndex]);
             skillSelect.addActionListener(e ->
-                board.setEngineSkillLevel(skillValues[skillSelect.getSelectedIndex()])
+                board.setEngineElo(eloValues[skillSelect.getSelectedIndex()])
             );
 
             JLabel statusLabel = new JLabel("Press Play to begin.");

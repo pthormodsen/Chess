@@ -51,6 +51,15 @@ public class StockfishClient implements Closeable {
         sendCommand("setoption name Skill Level value " + clamped);
     }
 
+    public synchronized void setLimitStrength(boolean enabled) throws IOException {
+        sendCommand("setoption name UCI_LimitStrength value " + (enabled ? "true" : "false"));
+    }
+
+    public synchronized void setTargetElo(int elo) throws IOException {
+        int clamped = Math.max(300, Math.min(3500, elo));
+        sendCommand("setoption name UCI_Elo value " + clamped);
+    }
+
 
     public synchronized String requestBestMove(String moves, Duration thinkTime) throws IOException {
         String sanitizedMoves = moves == null ? "" : moves.trim();

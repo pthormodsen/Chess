@@ -48,6 +48,7 @@ public class Board extends JPanel {
     private boolean engineEnabled = false;
     private boolean engineIsWhite = false;
     private int engineSkillLevel = 8;
+    private int engineElo = 1200;
     private Duration engineThinkTime = Duration.ofMillis(700);
     private Consumer<String> statusConsumer;
     private Consumer<String> gameEndConsumer;
@@ -79,6 +80,16 @@ public class Board extends JPanel {
         this.captureConsumer = consumer;
     }
 
+    public void setEngineSkillLevel(int level) {
+        this.engineSkillLevel = Math.max(0, Math.min(20, level));
+        configureEngine();
+    }
+
+    public void setEngineElo(int elo){
+        this.engineElo = Math.max(800, Math.min(2800, elo));
+        configureEngine();
+    }
+
     public boolean isGameActive(){
         return isGameActive;
     }
@@ -92,6 +103,7 @@ public class Board extends JPanel {
         if(stockfishClient != null){
             try{
                 stockfishClient.newGame();
+                configureEngine();
             } catch (IOException e){
                 System.err.println("Unable to reset engine: " + e.getMessage());
             }
@@ -109,17 +121,6 @@ public class Board extends JPanel {
     public void enableManualSetup(){
         isGameActive = true;
         isGameOver = false;
-    }
-
-    public void setEngineSkillLevel(int level) {
-        this.engineSkillLevel = Math.max(0, Math.min(20, level));
-        if (stockfishClient != null) {
-            try {
-                stockfishClient.setSkillLevel(engineSkillLevel);
-            } catch (IOException e) {
-                System.err.println("Unable to update engine skill: " + e.getMessage());
-            }
-        }
     }
 
     public Piece getPiece(int col, int row){
@@ -575,7 +576,7 @@ public class Board extends JPanel {
 
         try{
             stockfishClient = new StockfishClient(enginePath);
-            stockfishClient.setSkillLevel(engineSkillLevel);
+            configureEngine();
             engineExecutor = Executors.newSingleThreadExecutor();
             engineEnabled = true;
             engineIsWhite = false;
@@ -665,6 +666,19 @@ public class Board extends JPanel {
                 stockfishClient.close();
             } catch (IOException ignored){
             }
+        }
+    }
+
+    private void configureEngine(){
+        if(stockfishClient == null){
+            return;
+        }
+        try{
+            stockfishClient.setSkillLevel(engineSkillLevel);
+            stockfishClient.setLimitStrength(true);
+            stockfishClient.setTargetElo(engineElo);
+        } catch (IOException e){
+            System.err.println("Unable to configure engine: " + e.getMessage());
         }
     }
 
