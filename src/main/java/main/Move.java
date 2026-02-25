@@ -11,6 +11,8 @@ public class Move {
 
     Piece piece;
     Piece capture;
+    public boolean isPromotion;
+    public boolean isCastle;
 
     public Move(Board board, Piece piece, int newCol, int newRow) {
         this.oldCol = piece.col;

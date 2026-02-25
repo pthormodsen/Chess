@@ -20,8 +20,8 @@ public class Input extends MouseAdapter {
     public void mousePressed(MouseEvent e) {
 
         hasDragged = false;
-        int col = e.getX() / board.tileSize;
-        int row = e.getY() / board.tileSize;
+        int col = board.screenToBoardCol(e.getX() / board.tileSize);
+        int row = board.screenToBoardRow(e.getY() / board.tileSize);
 
         if(!board.isGameActive()){
             return;
@@ -53,9 +53,7 @@ public class Input extends MouseAdapter {
 
         hasDragged = true;
         if(board.selectedPiece != null){
-            board.selectedPiece.xPos = e.getX() - board.tileSize / 2;
-            board.selectedPiece.yPos = e.getY() - board.tileSize / 2;
-
+            board.updateDragPosition(e.getX() - board.tileSize / 2, e.getY() - board.tileSize / 2);
             board.repaint();
         }
 
@@ -64,8 +62,8 @@ public class Input extends MouseAdapter {
     @Override
     public void mouseReleased(MouseEvent e) {
 
-        int col = e.getX() / board.tileSize;
-        int row = e.getY() / board.tileSize;
+        int col = board.screenToBoardCol(e.getX() / board.tileSize);
+        int row = board.screenToBoardRow(e.getY() / board.tileSize);
 
         if(!board.isGameActive()){
             board.selectedPiece = null;
@@ -74,12 +72,14 @@ public class Input extends MouseAdapter {
         }
 
         if(!hasDragged){
+            board.stopDragging();
             return;
         }
 
         if(board.selectedPiece != null){
 
             if(!board.isInsideBoard(col, row)){
+                board.stopDragging();
                 snapBackSelectedPiece();
                 board.selectedPiece = null;
                 board.repaint();
@@ -95,6 +95,7 @@ public class Input extends MouseAdapter {
             }
         }
         board.selectedPiece = null;
+        board.stopDragging();
         board.repaint();
 
     }
@@ -111,8 +112,8 @@ public class Input extends MouseAdapter {
             return;
         }
 
-        int col = e.getX() / board.tileSize;
-        int row = e.getY() / board.tileSize;
+        int col = board.screenToBoardCol(e.getX() / board.tileSize);
+        int row = board.screenToBoardRow(e.getY() / board.tileSize);
 
         if(!board.isInsideBoard(col, row)){
             return;
@@ -122,6 +123,9 @@ public class Input extends MouseAdapter {
             Piece target = board.getPiece(col, row);
             if(target != null){
                 board.selectedPiece = target;
+                int screenX = board.boardToScreenCol(col) * board.tileSize;
+                int screenY = board.boardToScreenRow(row) * board.tileSize;
+                board.updateDragPosition(screenX, screenY);
                 board.repaint();
             }
             return;
@@ -141,6 +145,8 @@ public class Input extends MouseAdapter {
             snapBackSelectedPiece();
         }
         board.selectedPiece = null;
+        board.stopDragging();
         board.repaint();
     }
+
 }
