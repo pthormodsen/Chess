@@ -14,7 +14,7 @@ public class Main {
         SwingUtilities.invokeLater(() -> {
             JFrame frame = new JFrame("Chess");
             frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-            frame.getContentPane().setBackground(new Color(43, 43, 43));
+            frame.getContentPane().setBackground(Theme.BG);
             frame.setLayout(new BorderLayout());
 
             Board board = new Board();
@@ -25,44 +25,57 @@ public class Main {
             for (int elo : eloValues) {
                 skillSelect.addItem("Elo " + elo);
             }
-            int defaultIndex = 2; // 1200
+            int defaultIndex = 0; // 800
             skillSelect.setSelectedIndex(defaultIndex);
             board.setEngineElo(eloValues[defaultIndex]);
             skillSelect.addActionListener(e ->
                 board.setEngineElo(eloValues[skillSelect.getSelectedIndex()])
             );
+            styleCombo(skillSelect);
+
+            int[] timeMinutes = {1, 3, 5, 10, 15};
+            JComboBox<String> timeSelect = new JComboBox<>();
+            for (int mins : timeMinutes) {
+                timeSelect.addItem(mins + " min");
+            }
+            int defaultTimeIndex = 2; // 5 minutes
+            timeSelect.setSelectedIndex(defaultTimeIndex);
+            board.setTimeControlMinutes(timeMinutes[defaultTimeIndex]);
+            timeSelect.addActionListener(e ->
+                board.setTimeControlMinutes(timeMinutes[timeSelect.getSelectedIndex()])
+            );
+            styleCombo(timeSelect);
 
             JLabel statusLabel = new JLabel("Press Play to begin.");
-            statusLabel.setForeground(Color.WHITE);
+            statusLabel.setForeground(Theme.TEXT_PRIMARY);
             statusLabel.setFont(statusLabel.getFont().deriveFont(Font.BOLD, 17f));
 
             JLabel evalLabel = new JLabel("Material even");
-            evalLabel.setForeground(new Color(200, 200, 200));
+            evalLabel.setForeground(Theme.TEXT_PRIMARY);
             evalLabel.setFont(evalLabel.getFont().deriveFont(Font.PLAIN, 15f));
             final String[] liveEvalMessage = {"Material even"};
 
             JLabel whiteCaptureLabel = new JLabel("White captures: -");
-            whiteCaptureLabel.setForeground(new Color(200, 200, 200));
+            whiteCaptureLabel.setForeground(Theme.TEXT_SECONDARY);
             whiteCaptureLabel.setFont(whiteCaptureLabel.getFont().deriveFont(Font.PLAIN, 14f));
             JLabel blackCaptureLabel = new JLabel("Black captures: -");
-            blackCaptureLabel.setForeground(new Color(200, 200, 200));
+            blackCaptureLabel.setForeground(Theme.TEXT_SECONDARY);
             blackCaptureLabel.setFont(blackCaptureLabel.getFont().deriveFont(Font.PLAIN, 14f));
             JLabel whiteClockLabel = new JLabel("White 05:00");
-            whiteClockLabel.setForeground(new Color(200, 200, 200));
+            whiteClockLabel.setForeground(Theme.TEXT_PRIMARY);
             whiteClockLabel.setFont(whiteClockLabel.getFont().deriveFont(Font.BOLD, 16f));
             JLabel blackClockLabel = new JLabel("Black 05:00");
-            blackClockLabel.setForeground(new Color(200, 200, 200));
+            blackClockLabel.setForeground(Theme.TEXT_PRIMARY);
             blackClockLabel.setFont(blackClockLabel.getFont().deriveFont(Font.BOLD, 16f));
 
             JCheckBox botToggle = new JCheckBox("Play vs Stockfish", true);
-            botToggle.setOpaque(false);
-            botToggle.setForeground(Color.WHITE);
+            styleToggle(botToggle);
             botToggle.addActionListener(e -> {
                 boolean playBot = botToggle.isSelected();
                 board.setHumanVsHuman(!playBot);
             });
 
-            JButton playButton = new JButton("Play");
+            JButton playButton = createPrimaryButton("Play");
             playButton.addActionListener(e -> {
                 board.startNewGame();
                 playButton.setText("Playing...");
@@ -89,26 +102,33 @@ public class Main {
             JTextArea moveArea = new JTextArea(6, 40);
             moveArea.setEditable(false);
             moveArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+            styleTextArea(moveArea);
+
             JTextArea analysisReportArea = new JTextArea(10, 40);
             analysisReportArea.setEditable(false);
             analysisReportArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
             analysisReportArea.setText("Press Analyze to run a Stockfish-powered review.");
+            styleTextArea(analysisReportArea);
+
             JTextArea analysisDetailArea = new JTextArea(4, 30);
             analysisDetailArea.setEditable(false);
             analysisDetailArea.setLineWrap(true);
             analysisDetailArea.setWrapStyleWord(true);
             analysisDetailArea.setText("Press Analyze to see best-move feedback.");
+            styleTextArea(analysisDetailArea);
 
             JLabel analysisSummaryLabel = new JLabel("Run analysis to enable review.");
+            analysisSummaryLabel.setForeground(Theme.TEXT_PRIMARY);
             JLabel analysisMoveLabel = new JLabel("No analysis loaded.");
+            analysisMoveLabel.setForeground(Theme.TEXT_SECONDARY);
 
-            JButton analysisPrevButton = new JButton("◀");
+            JButton analysisPrevButton = createGhostButton("◀");
             analysisPrevButton.setEnabled(false);
             analysisPrevButton.addActionListener(e -> board.stepAnalysis(-1));
-            JButton analysisNextButton = new JButton("▶");
+            JButton analysisNextButton = createGhostButton("▶");
             analysisNextButton.setEnabled(false);
             analysisNextButton.addActionListener(e -> board.stepAnalysis(1));
-            JButton exitReviewButton = new JButton("Exit Review");
+            JButton exitReviewButton = createSecondaryButton("Exit Review");
             exitReviewButton.setEnabled(false);
             exitReviewButton.addActionListener(e -> board.exitAnalysisReview());
 
@@ -164,48 +184,12 @@ public class Main {
                 })
             );
 
-            JPanel topPanel = new JPanel(new BorderLayout());
-            topPanel.setBackground(new Color(26, 26, 26));
-            topPanel.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createMatteBorder(0, 0, 1, 0, new Color(50, 50, 50)),
-                BorderFactory.createEmptyBorder(10, 18, 10, 18)
-            ));
-            JPanel leftPanel = new JPanel();
-            leftPanel.setBackground(new Color(26, 26, 26));
-            leftPanel.setLayout(new BoxLayout(leftPanel, BoxLayout.Y_AXIS));
-            leftPanel.add(evalLabel);
-            leftPanel.add(Box.createVerticalStrut(4));
-            leftPanel.add(whiteCaptureLabel);
-            leftPanel.add(blackCaptureLabel);
-            leftPanel.add(Box.createVerticalStrut(4));
-            leftPanel.add(whiteClockLabel);
-            leftPanel.add(blackClockLabel);
-            topPanel.add(leftPanel, BorderLayout.WEST);
-
             statusLabel.setHorizontalAlignment(SwingConstants.CENTER);
-            JPanel centerPanel = new JPanel(new GridBagLayout());
-            centerPanel.setBackground(new Color(26, 26, 26));
-            centerPanel.add(statusLabel);
-            topPanel.add(centerPanel, BorderLayout.CENTER);
-
-            int[] timeMinutes = {1, 3, 5, 10, 15};
-            JComboBox<String> timeSelect = new JComboBox<>();
-            for (int mins : timeMinutes) {
-                timeSelect.addItem(mins + " min");
-            }
-            int defaultTimeIndex = 2; // 5 minutes
-            timeSelect.setSelectedIndex(defaultTimeIndex);
-            board.setTimeControlMinutes(timeMinutes[defaultTimeIndex]);
-            timeSelect.addActionListener(e ->
-                board.setTimeControlMinutes(timeMinutes[timeSelect.getSelectedIndex()])
-            );
 
             JRadioButton playAsWhite = new JRadioButton("Play as White");
             JRadioButton playAsBlack = new JRadioButton("Play as Black");
-            playAsWhite.setOpaque(false);
-            playAsBlack.setOpaque(false);
-            playAsWhite.setForeground(Color.WHITE);
-            playAsBlack.setForeground(Color.WHITE);
+            styleToggle(playAsWhite);
+            styleToggle(playAsBlack);
             playAsWhite.setSelected(true);
             board.setEnginePlaysWhite(false);
             playAsWhite.addActionListener(e -> board.setEnginePlaysWhite(false));
@@ -214,33 +198,12 @@ public class Main {
             sideGroup.add(playAsWhite);
             sideGroup.add(playAsBlack);
 
-            JPanel rightPanel = new JPanel();
-            rightPanel.setBackground(new Color(26, 26, 26));
-            rightPanel.setLayout(new BoxLayout(rightPanel, BoxLayout.Y_AXIS));
-            JLabel difficultyLabel = new JLabel("Difficulty");
-            difficultyLabel.setForeground(Color.WHITE);
-            rightPanel.add(difficultyLabel);
-            rightPanel.add(skillSelect);
-            JLabel timeLabel = new JLabel("Time Control");
-            timeLabel.setForeground(Color.WHITE);
-            rightPanel.add(timeLabel);
-            rightPanel.add(timeSelect);
-            rightPanel.add(botToggle);
-            rightPanel.add(Box.createVerticalStrut(8));
-            rightPanel.add(playAsWhite);
-            rightPanel.add(playAsBlack);
-            rightPanel.add(Box.createVerticalStrut(6));
-            rightPanel.add(playButton);
-            topPanel.add(rightPanel, BorderLayout.EAST);
-
-            JButton copyPgn = new JButton("Copy PGN");
-            copyPgn.setMargin(new Insets(2, 6, 2, 6));
+            JButton copyPgn = createSecondaryButton("Copy PGN");
             copyPgn.addActionListener(e -> {
                 String pgn = board.getPgn(board.getLastResultTag());
                 Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(pgn), null);
             });
-            JButton analyzeButton = new JButton("Analyze");
-            analyzeButton.setMargin(new Insets(2, 6, 2, 6));
+            JButton analyzeButton = createPrimaryButton("Analyze");
             analyzeButton.addActionListener(e -> {
                 analyzeButton.setEnabled(false);
                 analysisReportArea.setText("Analyzing game...");
@@ -249,62 +212,154 @@ public class Main {
                     analyzeButton.setEnabled(true);
                 });
             });
-            JPanel logPanel = new JPanel(new BorderLayout());
-            logPanel.setBackground(new Color(24, 24, 24));
-            logPanel.setBorder(BorderFactory.createEmptyBorder(6, 6, 6, 6));
-            logPanel.setPreferredSize(new Dimension(260, 0));
-            JPanel analysisControls = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 4));
-            analysisControls.add(new JLabel("Navigate:"));
+            JScrollPane detailScroll = wrapScroll(analysisDetailArea);
+            detailScroll.setPreferredSize(new Dimension(260, 150));
+            JScrollPane reportScroll = wrapScroll(analysisReportArea);
+            JScrollPane movesScroll = wrapScroll(moveArea);
+
+            JPanel analysisControls = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+            analysisControls.setOpaque(false);
+            JLabel navLabel = new JLabel("Navigate");
+            navLabel.setForeground(Theme.TEXT_SECONDARY);
+            analysisControls.add(navLabel);
             analysisControls.add(analysisPrevButton);
             analysisControls.add(analysisNextButton);
             analysisControls.add(exitReviewButton);
+            analysisControls.setAlignmentX(Component.LEFT_ALIGNMENT);
 
-            JScrollPane detailScroll = new JScrollPane(analysisDetailArea);
-            detailScroll.setBorder(BorderFactory.createTitledBorder("Move feedback"));
-            detailScroll.setPreferredSize(new Dimension(240, 120));
+            JPanel setupForm = new JPanel(new GridBagLayout());
+            setupForm.setOpaque(false);
+            GridBagConstraints gbc = new GridBagConstraints();
+            gbc.insets = new Insets(6, 4, 6, 4);
+            gbc.fill = GridBagConstraints.HORIZONTAL;
+            gbc.weightx = 1.0;
 
-            JScrollPane reportScroll = new JScrollPane(analysisReportArea);
-            reportScroll.setBorder(BorderFactory.createTitledBorder("Full review log"));
+            JLabel difficultyLabel = new JLabel("Difficulty");
+            difficultyLabel.setForeground(Theme.TEXT_SECONDARY);
+            gbc.gridx = 0; gbc.gridy = 0;
+            setupForm.add(difficultyLabel, gbc);
+            gbc.gridx = 1;
+            setupForm.add(skillSelect, gbc);
 
-            JPanel analysisTop = new JPanel();
-            analysisTop.setLayout(new BoxLayout(analysisTop, BoxLayout.Y_AXIS));
-            analysisTop.add(analysisSummaryLabel);
-            analysisTop.add(Box.createVerticalStrut(4));
-            analysisTop.add(analysisMoveLabel);
-            analysisTop.add(Box.createVerticalStrut(4));
-            analysisTop.add(detailScroll);
-            analysisTop.add(Box.createVerticalStrut(4));
-            analysisTop.add(analysisControls);
+            JLabel timeLabel = new JLabel("Time Control");
+            timeLabel.setForeground(Theme.TEXT_SECONDARY);
+            gbc.gridx = 0; gbc.gridy = 1;
+            setupForm.add(timeLabel, gbc);
+            gbc.gridx = 1;
+            setupForm.add(timeSelect, gbc);
 
-            JPanel analysisTab = new JPanel(new BorderLayout());
-            analysisTab.add(analysisTop, BorderLayout.NORTH);
-            analysisTab.add(reportScroll, BorderLayout.CENTER);
+            gbc.gridx = 0; gbc.gridy = 2;
+            gbc.gridwidth = 2;
+            setupForm.add(botToggle, gbc);
 
-            JPanel logHeader = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 4));
-            logHeader.add(copyPgn);
-            logHeader.add(analyzeButton);
-            logPanel.add(logHeader, BorderLayout.NORTH);
+            JPanel sideChoice = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
+            sideChoice.setOpaque(false);
+            sideChoice.add(playAsWhite);
+            sideChoice.add(playAsBlack);
+            gbc.gridy = 3;
+            setupForm.add(sideChoice, gbc);
+
+            JPanel controlsPanel = new JPanel();
+            controlsPanel.setOpaque(false);
+            controlsPanel.setLayout(new BoxLayout(controlsPanel, BoxLayout.Y_AXIS));
+            playButton.setAlignmentX(Component.LEFT_ALIGNMENT);
+            analyzeButton.setAlignmentX(Component.LEFT_ALIGNMENT);
+            copyPgn.setAlignmentX(Component.LEFT_ALIGNMENT);
+            controlsPanel.add(playButton);
+            controlsPanel.add(Box.createVerticalStrut(10));
+            controlsPanel.add(analyzeButton);
+            controlsPanel.add(Box.createVerticalStrut(6));
+            controlsPanel.add(copyPgn);
+
+            JPanel analysisContent = new JPanel();
+            analysisContent.setOpaque(false);
+            analysisContent.setLayout(new BoxLayout(analysisContent, BoxLayout.Y_AXIS));
+            analysisSummaryLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
+            analysisMoveLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
+            detailScroll.setAlignmentX(Component.LEFT_ALIGNMENT);
+            analysisControls.setAlignmentX(Component.LEFT_ALIGNMENT);
+            analysisContent.add(analysisSummaryLabel);
+            analysisContent.add(Box.createVerticalStrut(4));
+            analysisContent.add(analysisMoveLabel);
+            analysisContent.add(Box.createVerticalStrut(10));
+            analysisContent.add(detailScroll);
+            analysisContent.add(Box.createVerticalStrut(10));
+            analysisContent.add(analysisControls);
+
             JTabbedPane logTabs = new JTabbedPane();
-            logTabs.addTab("Moves", new JScrollPane(moveArea));
-            logTabs.addTab("Analysis", analysisTab);
-            logPanel.add(logTabs, BorderLayout.CENTER);
+            logTabs.addTab("Moves", movesScroll);
+            logTabs.addTab("Analysis Log", reportScroll);
+            logTabs.setForeground(Theme.TEXT_SECONDARY);
+            logTabs.setBackground(Theme.PANEL);
+            logTabs.setBorder(BorderFactory.createEmptyBorder());
+
+            JPanel sideColumn = new JPanel();
+            sideColumn.setBackground(Theme.BG);
+            sideColumn.setLayout(new BoxLayout(sideColumn, BoxLayout.Y_AXIS));
+            sideColumn.setBorder(BorderFactory.createEmptyBorder(20, 16, 20, 24));
+            sideColumn.setPreferredSize(new Dimension(320, 0));
+            sideColumn.add(createCard("Game Setup", setupForm));
+            sideColumn.add(Box.createVerticalStrut(12));
+            sideColumn.add(createCard("Controls", controlsPanel));
+            sideColumn.add(Box.createVerticalStrut(12));
+            sideColumn.add(createCard("Engine Review", analysisContent));
+            sideColumn.add(Box.createVerticalStrut(12));
+            sideColumn.add(createCard("History", logTabs));
+            sideColumn.add(Box.createVerticalGlue());
+
+            JPanel infoLeft = new JPanel();
+            infoLeft.setOpaque(false);
+            infoLeft.setLayout(new BoxLayout(infoLeft, BoxLayout.Y_AXIS));
+            infoLeft.add(evalLabel);
+            infoLeft.add(Box.createVerticalStrut(6));
+            infoLeft.add(whiteCaptureLabel);
+            infoLeft.add(blackCaptureLabel);
+
+            JPanel infoCenter = new JPanel(new GridBagLayout());
+            infoCenter.setOpaque(false);
+            infoCenter.add(statusLabel);
+
+            JPanel infoRight = new JPanel();
+            infoRight.setOpaque(false);
+            infoRight.setLayout(new BoxLayout(infoRight, BoxLayout.Y_AXIS));
+            infoRight.add(whiteClockLabel);
+            infoRight.add(Box.createVerticalStrut(6));
+            infoRight.add(blackClockLabel);
+
+            JPanel infoBar = new JPanel(new BorderLayout(18, 0));
+            infoBar.setBackground(Theme.PANEL);
+            infoBar.setBorder(BorderFactory.createEmptyBorder(16, 20, 16, 20));
+            infoBar.add(infoLeft, BorderLayout.WEST);
+            infoBar.add(infoCenter, BorderLayout.CENTER);
+            infoBar.add(infoRight, BorderLayout.EAST);
 
             JPanel boardFrame = new JPanel(new BorderLayout());
-            boardFrame.setBackground(new Color(58, 44, 32));
+            boardFrame.setBackground(new Color(53, 45, 36));
             boardFrame.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(new Color(109, 89, 72), 2, true),
-                BorderFactory.createEmptyBorder(4, 4, 4, 4)
+                BorderFactory.createLineBorder(new Color(90, 78, 64), 2),
+                BorderFactory.createEmptyBorder(10, 10, 10, 10)
             ));
             boardFrame.add(board, BorderLayout.CENTER);
 
-            JPanel boardWrapper = new JPanel(new BorderLayout());
-            boardWrapper.setBackground(new Color(17, 17, 17));
-            boardWrapper.setBorder(BorderFactory.createEmptyBorder(6, 10, 10, 10));
-            boardWrapper.add(boardFrame, BorderLayout.CENTER);
+            JPanel boardArea = new JPanel(new GridBagLayout());
+            boardArea.setBackground(Theme.BG);
+            boardArea.setBorder(BorderFactory.createEmptyBorder(20, 24, 24, 24));
+            GridBagConstraints boardConstraints = new GridBagConstraints();
+            boardConstraints.gridx = 0;
+            boardConstraints.gridy = 0;
+            boardArea.add(boardFrame, boardConstraints);
 
-            frame.add(topPanel, BorderLayout.NORTH);
-            frame.add(boardWrapper, BorderLayout.CENTER);
-            frame.add(logPanel, BorderLayout.EAST);
+            JPanel centerColumn = new JPanel(new BorderLayout());
+            centerColumn.setBackground(Theme.BG);
+            centerColumn.add(infoBar, BorderLayout.NORTH);
+            centerColumn.add(boardArea, BorderLayout.CENTER);
+
+            JPanel root = new JPanel(new BorderLayout());
+            root.setBackground(Theme.BG);
+            root.add(centerColumn, BorderLayout.CENTER);
+            root.add(sideColumn, BorderLayout.EAST);
+
+            frame.setContentPane(root);
 
             frame.pack();
             frame.setMinimumSize(new Dimension(1120, 840));
@@ -430,6 +485,120 @@ public class Main {
         String to = uci.substring(2, 4);
         String promo = uci.length() > 4 ? "=" + Character.toUpperCase(uci.charAt(4)) : "";
         return from + "→" + to + promo;
+    }
+
+    private static JPanel createCard(String title, JComponent content){
+        JPanel card = new JPanel(new BorderLayout());
+        card.setBackground(Theme.PANEL);
+        card.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(new Color(58, 58, 58)),
+            BorderFactory.createEmptyBorder(12, 14, 12, 14)
+        ));
+        if(title != null && !title.isBlank()){
+            JLabel header = new JLabel(title);
+            header.setForeground(Theme.TEXT_PRIMARY);
+            header.setFont(header.getFont().deriveFont(Font.BOLD, 14f));
+            header.setBorder(BorderFactory.createEmptyBorder(0, 0, 10, 0));
+            card.add(header, BorderLayout.NORTH);
+        }
+        card.add(content, BorderLayout.CENTER);
+        return card;
+    }
+
+    private static JScrollPane wrapScroll(JComponent component){
+        JScrollPane scroll = new JScrollPane(component);
+        scroll.setBorder(BorderFactory.createEmptyBorder());
+        scroll.getViewport().setBackground(Theme.INSET);
+        scroll.setBackground(Theme.INSET);
+        return scroll;
+    }
+
+    private static void styleTextArea(JTextArea area){
+        area.setBackground(Theme.INSET);
+        area.setForeground(Theme.TEXT_PRIMARY);
+        area.setCaretColor(Theme.TEXT_PRIMARY);
+        area.setBorder(BorderFactory.createEmptyBorder(8, 10, 8, 10));
+    }
+
+    private static void styleToggle(AbstractButton button){
+        button.setOpaque(false);
+        button.setForeground(Theme.TEXT_PRIMARY);
+        button.setFont(button.getFont().deriveFont(Font.PLAIN, 13f));
+    }
+
+    private static void styleCombo(JComboBox<?> combo){
+        combo.setBackground(Theme.INSET);
+        combo.setForeground(Theme.TEXT_PRIMARY);
+        combo.setBorder(BorderFactory.createEmptyBorder(4, 8, 4, 8));
+        combo.setMaximumSize(new Dimension(Integer.MAX_VALUE, combo.getPreferredSize().height));
+    }
+
+    private static JButton createPrimaryButton(String text){
+        return new StyledButton(text, Theme.ACCENT_PRIMARY, Theme.ACCENT_PRIMARY.brighter(), Theme.ACCENT_PRIMARY.darker());
+    }
+
+    private static JButton createSecondaryButton(String text){
+        StyledButton button = new StyledButton(text, Theme.BUTTON_BG, Theme.BUTTON_BG.brighter(), Theme.BUTTON_BG.darker());
+        button.setFont(button.getFont().deriveFont(Font.PLAIN, 13f));
+        return button;
+    }
+
+    private static JButton createGhostButton(String text){
+        StyledButton button = new StyledButton(text, Theme.GHOST_BG, Theme.GHOST_BG.brighter(), Theme.GHOST_BG.darker());
+        button.setForeground(Theme.TEXT_SECONDARY);
+        button.setFont(button.getFont().deriveFont(Font.PLAIN, 12f));
+        button.setBorder(BorderFactory.createEmptyBorder(6, 14, 6, 14));
+        return button;
+    }
+
+    private static final class StyledButton extends JButton {
+        private final Color base;
+        private final Color hover;
+        private final Color pressed;
+
+        private StyledButton(String text, Color base, Color hover, Color pressed) {
+            super(text);
+            this.base = base;
+            this.hover = hover;
+            this.pressed = pressed;
+            setFocusPainted(false);
+            setContentAreaFilled(false);
+            setOpaque(false);
+            setForeground(Theme.TEXT_PRIMARY);
+            setFont(getFont().deriveFont(Font.BOLD, 13f));
+            setBorder(BorderFactory.createEmptyBorder(8, 18, 8, 18));
+            setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            Color fill = base;
+            if(!isEnabled()){
+                fill = Theme.BUTTON_DISABLED;
+            } else if(getModel().isPressed()){
+                fill = pressed;
+            } else if(getModel().isRollover()){
+                fill = hover;
+            }
+            g2.setColor(fill);
+            g2.fillRoundRect(0, 0, getWidth(), getHeight(), 16, 16);
+            g2.dispose();
+            super.paintComponent(g);
+        }
+    }
+
+    private static final class Theme {
+        private static final Color BG = new Color(30, 30, 30);
+        private static final Color PANEL = new Color(42, 42, 42);
+        private static final Color INSET = new Color(26, 26, 26);
+        private static final Color TEXT_PRIMARY = new Color(224, 224, 224);
+        private static final Color TEXT_SECONDARY = new Color(170, 170, 170);
+        private static final Color ACCENT_PRIMARY = new Color(108, 172, 255);
+        private static final Color BUTTON_BG = new Color(58, 58, 58);
+        private static final Color BUTTON_DISABLED = new Color(65, 65, 65);
+        private static final Color GHOST_BG = new Color(48, 48, 48);
     }
 
 }

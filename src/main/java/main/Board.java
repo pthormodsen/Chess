@@ -31,7 +31,7 @@ public class Board extends JPanel {
 
     public String fenStartingPosition = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
-    public int tileSize = 84;
+    public int tileSize = 75;
     int cols = 8;
     int rows = 8;
 
@@ -63,8 +63,8 @@ public class Board extends JPanel {
     private boolean flipBoard = false;
     private int engineSkillLevel = 8;
     private int engineElo = 1200;
-    private Duration engineThinkTime = Duration.ofMillis(700);
-    private long initialClockMillis = Duration.ofMinutes(5).toMillis();
+    private Duration engineThinkTime = Duration.ofMillis(500);
+    private long initialClockMillis = Duration.ofMinutes(10).toMillis();
     private long whiteClockMillis = initialClockMillis;
     private long blackClockMillis = initialClockMillis;
     private javax.swing.Timer clockTimer;
@@ -104,7 +104,7 @@ public class Board extends JPanel {
 
     public Board() {
         this.setPreferredSize(new Dimension(cols * tileSize, rows * tileSize));
-        this.setBackground(new Color(28, 28, 28));
+        this.setBackground(new Color(43, 43, 43));
         this.setOpaque(true);
         this.addMouseListener(input);
         this.addMouseMotionListener(input);
