@@ -142,9 +142,9 @@ public class GameAnalyzer {
 
     private String classify(double loss) {
         double delta = Math.max(0, loss);
-        if (delta >= 3.0) return "Blunder";
-        if (delta >= 2.0) return "Mistake";
-        if (delta >= 1.0) return "Inaccuracy";
+        if (delta >= 7.0) return "Blunder";
+        if (delta >= 4.0) return "Mistake";
+        if (delta >= 2.0) return "Inaccuracy";
         return "Good";
     }
 
@@ -172,8 +172,11 @@ public class GameAnalyzer {
         if (absLoss < 1.5) {
             return "Inaccuracy";
         }
-        if (absLoss < 3.0) {
+        if (absLoss < 4.0) {
             return "Mistake";
+        }
+        if (absLoss < 7.0) {
+            return "Severe Mistake";
         }
         return "Blunder";
     }

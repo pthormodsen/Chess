@@ -20,8 +20,8 @@ public class Input extends MouseAdapter {
     public void mousePressed(MouseEvent e) {
 
         hasDragged = false;
-        int col = board.screenToBoardCol(e.getX() / board.tileSize);
-        int row = board.screenToBoardRow(e.getY() / board.tileSize);
+        int col = board.pixelToBoardCol(e.getX());
+        int row = board.pixelToBoardRow(e.getY());
 
         if(!board.isGameActive()){
             return;
@@ -62,8 +62,8 @@ public class Input extends MouseAdapter {
     @Override
     public void mouseReleased(MouseEvent e) {
 
-        int col = board.screenToBoardCol(e.getX() / board.tileSize);
-        int row = board.screenToBoardRow(e.getY() / board.tileSize);
+        int col = board.pixelToBoardCol(e.getX());
+        int row = board.pixelToBoardRow(e.getY());
 
         if(!board.isGameActive()){
             board.selectedPiece = null;
@@ -101,8 +101,8 @@ public class Input extends MouseAdapter {
     }
 
     private void snapBackSelectedPiece(){
-        board.selectedPiece.xPos = board.selectedPiece.col * board.tileSize;
-        board.selectedPiece.yPos = board.selectedPiece.row * board.tileSize;
+        board.selectedPiece.xPos = board.boardToPixelX(board.selectedPiece.col);
+        board.selectedPiece.yPos = board.boardToPixelY(board.selectedPiece.row);
     }
 
     @Override
@@ -112,8 +112,8 @@ public class Input extends MouseAdapter {
             return;
         }
 
-        int col = board.screenToBoardCol(e.getX() / board.tileSize);
-        int row = board.screenToBoardRow(e.getY() / board.tileSize);
+        int col = board.pixelToBoardCol(e.getX());
+        int row = board.pixelToBoardRow(e.getY());
 
         if(!board.isInsideBoard(col, row)){
             return;
@@ -123,8 +123,8 @@ public class Input extends MouseAdapter {
             Piece target = board.getPiece(col, row);
             if(target != null){
                 board.selectedPiece = target;
-                int screenX = board.boardToScreenCol(col) * board.tileSize;
-                int screenY = board.boardToScreenRow(row) * board.tileSize;
+                int screenX = board.boardToPixelX(col);
+                int screenY = board.boardToPixelY(row);
                 board.updateDragPosition(screenX, screenY);
                 board.repaint();
             }

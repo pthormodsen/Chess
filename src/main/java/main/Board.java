@@ -32,6 +32,7 @@ public class Board extends JPanel {
     public String fenStartingPosition = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
     public int tileSize = 75;
+    private final int coordinateMargin = 24;
     int cols = 8;
     int rows = 8;
 
@@ -100,10 +101,11 @@ public class Board extends JPanel {
     private MoveHighlight bestMoveArrow;
     private String currentQualityTag;
     private LiveGameState liveStateBackup;
+    private final ArrayList<MoveHighlight> checkMarkers = new ArrayList<>();
 
 
     public Board() {
-        this.setPreferredSize(new Dimension(cols * tileSize, rows * tileSize));
+        this.setPreferredSize(new Dimension(cols * tileSize + coordinateMargin * 2, rows * tileSize + coordinateMargin * 2));
         this.setBackground(new Color(43, 43, 43));
         this.setOpaque(true);
         this.addMouseListener(input);
@@ -111,6 +113,7 @@ public class Board extends JPanel {
         loadPositionFromFEN(fenStartingPosition);
         initializeEngineIntegration();
         loadSounds();
+        updateCheckMarkers();
     }
 
     private LiveGameState captureLiveGameState(){
@@ -206,6 +209,7 @@ public class Board extends JPanel {
         notifyEvaluation();
         notifyMoveLog();
         notifyClock();
+        updateCheckMarkers();
         if(engineEnabled){
             requestEngineMoveIfNeeded();
         }
@@ -364,8 +368,8 @@ public class Board extends JPanel {
 
         move.piece.col = move.newCol;
         move.piece.row = move.newRow;
-        move.piece.xPos = move.newCol * tileSize;
-        move.piece.yPos = move.newRow * tileSize;
+        move.piece.xPos = boardToPixelX(move.piece.col);
+        move.piece.yPos = boardToPixelY(move.piece.row);
 
         move.piece.isFirstMove = false;
 
@@ -403,6 +407,7 @@ public class Board extends JPanel {
             }
             playSound(moveSoundToPlay);
         }
+        updateCheckMarkers();
     }
 
     private void moveKing(Move move){
@@ -415,8 +420,8 @@ public class Board extends JPanel {
             if(rook != null && "Rook".equals(rook.name)){
                 rook.col = rookTargetCol;
                 rook.row = move.piece.row;
-                rook.xPos = rook.col * tileSize;
-                rook.yPos = rook.row * tileSize;
+                rook.xPos = boardToPixelX(rook.col);
+                rook.yPos = boardToPixelY(rook.row);
                 rook.isFirstMove = false;
                 move.isCastle = true;
             }
@@ -600,6 +605,7 @@ public class Board extends JPanel {
         }
         notifyCaptures();
         notifyEvaluation();
+        updateCheckMarkers();
     }
 
     private void updateGameState(){
@@ -818,10 +824,8 @@ public class Board extends JPanel {
         //Painting board
         for (int r = 0; r < rows; r++) {
             for (int c = 0; c < cols; c++) {
-                int drawCol = flipBoard ? cols - 1 - c : c;
-                int drawRow = flipBoard ? rows - 1 - r : r;
                 g2d.setColor((c + r) % 2 == 0 ? new Color(240, 217, 181) : new Color(181, 139, 99));
-                g2d.fillRect(drawCol * tileSize, drawRow * tileSize, tileSize, tileSize);
+                g2d.fillRect(drawX(c), drawY(r), tileSize, tileSize);
             }
         }
 
@@ -830,13 +834,13 @@ public class Board extends JPanel {
                 ? qualityHighlightColor(currentQualityTag)
                 : new Color(246, 246, 105, 160);
             g2d.setColor(moveHighlightColor);
-            g2d.fillRect(applyFlip(lastMove.oldCol) * tileSize, applyFlipRow(lastMove.oldRow) * tileSize, tileSize, tileSize);
-            g2d.fillRect(applyFlip(lastMove.newCol) * tileSize, applyFlipRow(lastMove.newRow) * tileSize, tileSize, tileSize);
+            g2d.fillRect(drawX(lastMove.oldCol), drawY(lastMove.oldRow), tileSize, tileSize);
+            g2d.fillRect(drawX(lastMove.newCol), drawY(lastMove.newRow), tileSize, tileSize);
         }
 
         if(selectedPiece != null){
             g2d.setColor(new Color(255, 255, 140, 160));
-            g2d.fillRect(applyFlip(selectedPiece.col) * tileSize, applyFlipRow(selectedPiece.row) * tileSize, tileSize, tileSize);
+            g2d.fillRect(drawX(selectedPiece.col), drawY(selectedPiece.row), tileSize, tileSize);
         }
 
         // Paint legal moves (accurate Chess.com olive tone)
@@ -853,8 +857,8 @@ public class Board extends JPanel {
                     Move preview = new Move(this, selectedPiece, c, r);
                     if (isValidMove(preview)) {
 
-                        int x = applyFlip(c) * tileSize;
-                        int y = applyFlipRow(r) * tileSize;
+                        int x = drawX(c);
+                        int y = drawY(r);
 
                         if (preview.capture == null) {
                             int diameter = tileSize / 3;
@@ -880,16 +884,6 @@ public class Board extends JPanel {
             g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, oldAA);
         }
 
-        if(analysisMode && analysisPointer >= 0 && lastMove != null){
-            MoveHighlight actualArrow = new MoveHighlight(lastMove.oldCol, lastMove.oldRow, lastMove.newCol, lastMove.newRow);
-            drawArrow(g2d, actualArrow, qualityColor(currentQualityTag));
-        }
-        if(bestMoveArrow != null){
-            drawArrow(g2d, bestMoveArrow, new Color(65, 190, 120, 220));
-        }
-
-        drawQualityBadge(g2d);
-
         //Painting each piece
         for(Piece piece : pieceList){
             int oldX = piece.xPos;
@@ -898,13 +892,29 @@ public class Board extends JPanel {
                 piece.xPos = dragScreenX;
                 piece.yPos = dragScreenY;
             } else {
-                piece.xPos = applyFlip(piece.col) * tileSize;
-                piece.yPos = applyFlipRow(piece.row) * tileSize;
+                piece.xPos = drawX(piece.col);
+                piece.yPos = drawY(piece.row);
             }
             piece.paint(g2d);
             piece.xPos = oldX;
             piece.yPos = oldY;
         }
+
+        if(!checkMarkers.isEmpty()){
+            for(MoveHighlight threat : checkMarkers){
+                drawArrow(g2d, threat, new Color(214, 73, 73, 220));
+            }
+        }
+        if(analysisMode && analysisPointer >= 0 && lastMove != null){
+            MoveHighlight actualArrow = new MoveHighlight(lastMove.oldCol, lastMove.oldRow, lastMove.newCol, lastMove.newRow);
+            drawArrow(g2d, actualArrow, qualityColor(currentQualityTag));
+        }
+        if(bestMoveArrow != null){
+            drawArrow(g2d, bestMoveArrow, new Color(65, 190, 120, 220));
+        }
+
+        drawCoordinates(g2d);
+        drawQualityBadge(g2d);
     }
 
     private Color qualityColor(String tag){
@@ -926,6 +936,8 @@ public class Board extends JPanel {
                 return new Color(224, 207, 53, 210);
             case "Mistake":
                 return new Color(236, 151, 31, 210);
+            case "Severe Mistake":
+                return new Color(217, 95, 14, 210);
             case "Blunder":
                 return new Color(212, 63, 58, 210);
             case "Mate":
@@ -945,10 +957,10 @@ public class Board extends JPanel {
             return;
         }
         Color paintColor = color != null ? color : new Color(255, 255, 255, 200);
-        int fromX = applyFlip(arrow.fromCol) * tileSize + tileSize / 2;
-        int fromY = applyFlipRow(arrow.fromRow) * tileSize + tileSize / 2;
-        int toX = applyFlip(arrow.toCol) * tileSize + tileSize / 2;
-        int toY = applyFlipRow(arrow.toRow) * tileSize + tileSize / 2;
+        int fromX = drawX(arrow.fromCol) + tileSize / 2;
+        int fromY = drawY(arrow.fromRow) + tileSize / 2;
+        int toX = drawX(arrow.toCol) + tileSize / 2;
+        int toY = drawY(arrow.toRow) + tileSize / 2;
 
         Graphics2D g = (Graphics2D) g2d.create();
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
@@ -1015,8 +1027,8 @@ public class Board extends JPanel {
         int padding = 10;
         int badgeWidth = textWidth + padding * 2;
         int badgeHeight = textHeight + padding;
-        int x = (cols * tileSize - badgeWidth) / 2;
-        int y = 8;
+        int x = coordinateMargin + (cols * tileSize - badgeWidth) / 2;
+        int y = Math.max(6, coordinateMargin / 2);
         Color base = qualityColor(currentQualityTag);
         Color fill = new Color(base.getRed(), base.getGreen(), base.getBlue(), 200);
         g.setColor(fill);
@@ -1029,6 +1041,113 @@ public class Board extends JPanel {
             g.setColor(Color.BLACK);
         }
         g.drawString(label, x + padding, y + padding + textHeight - fm.getDescent());
+        g.dispose();
+    }
+
+    private void updateCheckMarkers(){
+        checkMarkers.clear();
+        Piece king = findKing(isWhiteToMove);
+        if(king == null){
+            return;
+        }
+        for(Piece piece : pieceList){
+            if(piece.isWhite == king.isWhite){
+                continue;
+            }
+            if(attacksSquare(piece, king.col, king.row)){
+                checkMarkers.add(new MoveHighlight(piece.col, piece.row, king.col, king.row));
+            }
+        }
+        repaint();
+    }
+
+    private boolean attacksSquare(Piece attacker, int targetCol, int targetRow){
+        int colDiff = targetCol - attacker.col;
+        int rowDiff = targetRow - attacker.row;
+        switch (attacker.name){
+            case "Rook":
+                if(attacker.col == targetCol || attacker.row == targetRow){
+                    return isPathClear(attacker.col, attacker.row, targetCol, targetRow);
+                }
+                return false;
+            case "Bishop":
+                if(Math.abs(colDiff) == Math.abs(rowDiff)){
+                    return isPathClear(attacker.col, attacker.row, targetCol, targetRow);
+                }
+                return false;
+            case "Queen":
+                if(attacker.col == targetCol || attacker.row == targetRow ||
+                    Math.abs(colDiff) == Math.abs(rowDiff)){
+                    return isPathClear(attacker.col, attacker.row, targetCol, targetRow);
+                }
+                return false;
+            case "Knight":
+                return (Math.abs(colDiff) == 1 && Math.abs(rowDiff) == 2) ||
+                    (Math.abs(colDiff) == 2 && Math.abs(rowDiff) == 1);
+            case "Pawn":
+                int dir = attacker.isWhite ? -1 : 1;
+                return rowDiff == dir && Math.abs(colDiff) == 1;
+            case "King":
+                return Math.max(Math.abs(colDiff), Math.abs(rowDiff)) == 1;
+            default:
+                return false;
+        }
+    }
+
+    private boolean isPathClear(int fromCol, int fromRow, int toCol, int toRow){
+        int stepCol = Integer.compare(toCol, fromCol);
+        int stepRow = Integer.compare(toRow, fromRow);
+        int c = fromCol + stepCol;
+        int r = fromRow + stepRow;
+        while(c != toCol || r != toRow){
+            if(getPiece(c, r) != null){
+                return false;
+            }
+            c += stepCol;
+            r += stepRow;
+        }
+        return true;
+    }
+
+    private void drawCoordinates(Graphics2D g2d){
+        Graphics2D g = (Graphics2D) g2d.create();
+        g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+        Font font = getFont().deriveFont(Font.BOLD, 12f);
+        g.setFont(font);
+        Color text = new Color(230, 230, 230, 200);
+        Color shadow = new Color(0, 0, 0, 120);
+
+        for(int c = 0; c < cols; c++){
+            int boardCol = screenToBoardCol(c);
+            char file = (char) ('a' + boardCol);
+            int x = coordinateMargin + c * tileSize + tileSize - 12;
+            int topY = coordinateMargin - 6;
+            int bottomY = coordinateMargin + boardHeightPx() + 16;
+            g.setColor(shadow);
+            g.drawString(String.valueOf(file), x + 1, bottomY + 1);
+            g.setColor(text);
+            g.drawString(String.valueOf(file), x, bottomY);
+            g.setColor(shadow);
+            g.drawString(String.valueOf(file), x + 1, topY + 1);
+            g.setColor(text);
+            g.drawString(String.valueOf(file), x, topY);
+        }
+
+        for(int r = 0; r < rows; r++){
+            int boardRow = screenToBoardRow(r);
+            String rank = String.valueOf(rows - boardRow);
+            int leftX = coordinateMargin - 18;
+            int rightX = coordinateMargin + boardWidthPx() + 6;
+            int y = coordinateMargin + r * tileSize + 14;
+            g.setColor(shadow);
+            g.drawString(rank, leftX + 1, y + 1);
+            g.setColor(text);
+            g.drawString(rank, leftX, y);
+            g.setColor(shadow);
+            g.drawString(rank, rightX + 1, y + 1);
+            g.setColor(text);
+            g.drawString(rank, rightX, y);
+        }
         g.dispose();
     }
 
@@ -1224,6 +1343,7 @@ public class Board extends JPanel {
         stopDragging();
         notifyCaptures();
         notifyEvaluation();
+        updateCheckMarkers();
     }
 
     private void rebuildDisplayMovesForPointer(){
@@ -1491,6 +1611,30 @@ public class Board extends JPanel {
         return applyFlipRow(row);
     }
 
+    public int boardToPixelX(int col){
+        return coordinateMargin + boardToScreenCol(col) * tileSize;
+    }
+
+    public int boardToPixelY(int row){
+        return coordinateMargin + boardToScreenRow(row) * tileSize;
+    }
+
+    public int pixelToBoardCol(int pixelX){
+        int adjusted = pixelX - coordinateMargin;
+        if(adjusted < 0 || adjusted >= cols * tileSize){
+            return -1;
+        }
+        return screenToBoardCol(adjusted / tileSize);
+    }
+
+    public int pixelToBoardRow(int pixelY){
+        int adjusted = pixelY - coordinateMargin;
+        if(adjusted < 0 || adjusted >= rows * tileSize){
+            return -1;
+        }
+        return screenToBoardRow(adjusted / tileSize);
+    }
+
     public String getLastResultTag(){
         return lastResultTag;
     }
@@ -1639,6 +1783,22 @@ public class Board extends JPanel {
         }).start();
     }
 
+
+    private int drawX(int col){
+        return coordinateMargin + applyFlip(col) * tileSize;
+    }
+
+    private int drawY(int row){
+        return coordinateMargin + applyFlipRow(row) * tileSize;
+    }
+
+    private int boardWidthPx(){
+        return cols * tileSize;
+    }
+
+    private int boardHeightPx(){
+        return rows * tileSize;
+    }
 
     private int applyFlip(int col){
         return flipBoard ? cols - 1 - col : col;

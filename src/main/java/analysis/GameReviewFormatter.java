@@ -76,8 +76,10 @@ public final class GameReviewFormatter {
                 return "?! Inaccuracy";
             case "Mistake":
                 return "?? Mistake";
+            case "Severe Mistake":
+                return "☡ Severe mistake";
             case "Blunder":
-                return "☠ Blunder";
+                return "☠ Blunder (lost ≥7 pawns)";
             case "Mate":
                 return "♛ Forced Mate";
             default:
