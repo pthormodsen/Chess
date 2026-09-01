@@ -1,12 +1,13 @@
-# Chess (Swing + Stockfish)
+# Chess (Swing + Web + Stockfish)
 
-This is a simple Swing chess GUI that lets you play as White against the Stockfish engine. It highlights legal moves, tracks captured material, and shows who is ahead (similar to chess.com). The project was built with the help of an AI assistant.
+This is a simple chess project with a Swing desktop GUI and a Spring Boot powered web version. The desktop app lets you play as White against the Stockfish engine. The web app serves a React frontend from the Spring Boot jar and exposes Stockfish through `/api/engine`.
 
 ## Requirements
 
-- macOS/Linux/Windows with Java 23 (or adjust the Maven compiler version if needed)
+- macOS/Linux/Windows with Java 17+
 - Maven 3.9+
 - Stockfish binary (macOS ARM build shown below, but any UCI-compatible Stockfish works)
+- Node.js 20+ if you want to build the frontend outside Docker
 
 ## Setup
 
@@ -32,12 +33,47 @@ This is a simple Swing chess GUI that lets you play as White against the Stockfi
      ```
    - If you run from an IDE, add the same path as an environment variable or JVM property (`-Dstockfish.path=...`).
 
-4. **Build & run**
+4. **Build & run the desktop app**
    ```bash
    mvn clean package
    java -cp target/classes main.Main
    ```
    (Alternatively, run `./run.sh`, which builds and launches with the env var baked in.)
+
+## Web version
+
+For local frontend development:
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+Run the Spring Boot API separately from the project root:
+
+```bash
+export STOCKFISH_PATH=/absolute/path/to/stockfish-binary
+mvn spring-boot:run -Dspring-boot.run.main-class=server.ServerApplication
+```
+
+Vite runs on `http://localhost:3000` and proxies `/api` and `/ws` to Spring Boot on port `8081`.
+
+## Self-host on Ubuntu with Docker Compose
+
+On the Ubuntu server, install Docker and the Compose plugin, then from the project directory run:
+
+```bash
+docker compose up -d --build
+```
+
+The container installs Stockfish during the image build. Docker Compose publishes it on port `8080`:
+
+```text
+http://<server-ip>:8080
+```
+
+For a domain name, put a reverse proxy such as Caddy, Nginx Proxy Manager, or Nginx in front of the container and forward traffic to `localhost:8080`. If you expose it outside your home network, enable HTTPS at the proxy and avoid publishing extra ports.
 
 ## Using the app
 
@@ -53,4 +89,4 @@ This is a simple Swing chess GUI that lets you play as White against the Stockfi
 
 - This codebase was produced with AI assistance; double-check logic before shipping it into production.
 - Stockfish binaries are large; they’re intentionally not tracked in git. Each user must supply their own copy.
-- Tested on macOS with Java 23; adjust Maven’s `<maven.compiler.source>`/`target` if you need Java 17 or earlier.
+- The Docker image uses Java 17 and installs Stockfish inside the runtime container.

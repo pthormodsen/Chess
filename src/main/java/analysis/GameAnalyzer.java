@@ -4,7 +4,6 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 import uci.StockfishClient;
@@ -60,26 +59,28 @@ public class GameAnalyzer {
                 String move = moves.get(i);
                 boolean whiteMove = (i % 2 == 0);
 
-                double evalBefore = before.scoreCp / 100.0;
+                double evalBefore = toWhitePerspective(before, whiteMove);
                 String bestMove = before.bestMove;
                 List<String> pv = before.principalVariation;
                 history.add(move);
 
                 String prefix = String.join(" ", history);
                 StockfishClient.AnalysisResult after = client.analyzePosition(prefix, thinkTime);
-                double evalAfter = after.scoreCp / 100.0;
+                double evalAfter = toWhitePerspective(after, !whiteMove);
 
                 double delta = (evalAfter - evalBefore) * (whiteMove ? 1 : -1);
                 double loss = -delta;
                 double improvement = -loss;
                 boolean playedBest = bestMove != null && bestMove.equals(move);
+                double winLoss = winPercentLoss(whiteMove, evalBefore, evalAfter);
+                double winGain = Math.max(0, -winLoss);
 
-                String severity = classify(loss);
+                String severity = classifyWinLoss(winLoss);
                 if (before.mate != null) {
                     severity = "Mate in " + before.mate;
                 }
 
-                String tag = determineQualityTag(playedBest, loss, improvement, severity);
+                String tag = determineQualityTag(playedBest, winLoss, winGain, severity);
 
                 result.add(new Entry(i, whiteMove, move, bestMove, pv, evalBefore, evalAfter, loss, severity, tag));
 
@@ -107,15 +108,13 @@ public class GameAnalyzer {
             this.entries = entries;
             this.totalMoves = entries.size();
             this.avgLoss = entries.stream().mapToDouble(e -> Math.max(0, e.loss)).average().orElse(0);
-            this.inaccuracies = (int) entries.stream().filter(e -> "Inaccuracy".equals(e.severity)).count();
-            this.mistakes = (int) entries.stream().filter(e -> "Mistake".equals(e.severity)).count();
-            this.blunders = (int) entries.stream().filter(e -> "Blunder".equals(e.severity)).count();
+            this.inaccuracies = (int) entries.stream().filter(e -> winPercentLoss(e) >= 5 && winPercentLoss(e) < 10).count();
+            this.mistakes = (int) entries.stream().filter(e -> winPercentLoss(e) >= 10 && winPercentLoss(e) < 20).count();
+            this.blunders = (int) entries.stream().filter(e -> winPercentLoss(e) >= 20).count();
             this.bestCount = (int) entries.stream()
                 .filter(e -> isTopTier(e.qualityTag))
                 .count();
-            double lossSum = entries.stream().mapToDouble(e -> Math.max(0, e.loss)).sum();
-            double denom = entries.size() * 500.0;
-            this.accuracyScore = denom == 0 ? 100 : Math.max(0, 100 - (lossSum / denom) * 100);
+            this.accuracyScore = computeAccuracy(entries);
             this.maxLoss = entries.stream().mapToDouble(e -> Math.max(0, e.loss)).max().orElse(0);
             this.minLoss = entries.stream().mapToDouble(e -> Math.max(0, e.loss)).min().orElse(0);
             this.whiteAccuracy = computeSideAccuracy(entries, true);
@@ -124,59 +123,154 @@ public class GameAnalyzer {
     }
 
     private static double computeSideAccuracy(List<Entry> entries, boolean white) {
-        double lossSum = entries.stream()
+        List<Entry> sideEntries = entries.stream()
             .filter(e -> e.isWhite == white)
-            .mapToDouble(e -> Math.max(0, e.loss))
-            .sum();
-        long count = entries.stream().filter(e -> e.isWhite == white).count();
-        if (count == 0) {
+            .toList();
+        return computeAccuracy(sideEntries);
+    }
+
+    static double computeAccuracy(List<Entry> entries) {
+        if (entries.isEmpty()) {
             return 100;
         }
-        double denom = count * 500.0;
-        return Math.max(0, 100 - (lossSum / denom) * 100);
+        List<Double> accuracies = entries.stream()
+            .map(GameAnalyzer::lichessMoveAccuracy)
+            .toList();
+        List<Double> weights = volatilityWeights(entries);
+
+        double weighted = weightedMean(accuracies, weights);
+        double harmonic = harmonicMean(accuracies);
+        return clamp((weighted + harmonic) / 2, 0, 100);
+    }
+
+    static double lichessMoveAccuracy(Entry entry) {
+        double winLoss = winPercentLoss(entry);
+        if(winLoss <= 0){
+            return 100;
+        }
+        double raw = 103.1668100711649 * Math.exp(-0.04354415386753951 * winLoss) - 3.166924740191411;
+        return clamp(raw + 1, 0, 100);
+    }
+
+    static double winPercentLoss(Entry entry) {
+        return winPercentLoss(entry.isWhite, entry.evalBefore, entry.evalAfter);
+    }
+
+    private static double winPercentLoss(boolean isWhite, double evalBefore, double evalAfter) {
+        double before = playerWinPercent(isWhite, evalBefore);
+        double after = playerWinPercent(isWhite, evalAfter);
+        return Math.max(0, before - after);
+    }
+
+    static double winPercent(double pawnsFromWhitePerspective) {
+        double cp = clamp(pawnsFromWhitePerspective * 100, -1000, 1000);
+        return 50 + 50 * ((2 / (1 + Math.exp(-0.00368208 * cp))) - 1);
+    }
+
+    private static double playerWinPercent(Entry entry, double whitePerspectivePawns) {
+        return playerWinPercent(entry.isWhite, whitePerspectivePawns);
+    }
+
+    private static double playerWinPercent(boolean isWhite, double whitePerspectivePawns) {
+        return winPercent(isWhite ? whitePerspectivePawns : -whitePerspectivePawns);
+    }
+
+    private static List<Double> volatilityWeights(List<Entry> entries) {
+        List<Double> winPercents = new ArrayList<>();
+        winPercents.add(winPercent(0));
+        entries.forEach(entry -> winPercents.add(winPercent(entry.evalAfter)));
+
+        int windowSize = (int) clamp(entries.size() / 10.0, 2, 8);
+        List<Double> weights = new ArrayList<>();
+        int leadingCopies = Math.max(0, Math.min(windowSize, winPercents.size()) - 2);
+        for(int i = 0; i < leadingCopies; i++){
+            weights.add(windowWeight(winPercents, 0, windowSize));
+        }
+        for(int start = 0; start + windowSize <= winPercents.size(); start++){
+            weights.add(windowWeight(winPercents, start, windowSize));
+        }
+        while(weights.size() < entries.size()){
+            weights.add(weights.isEmpty() ? 1.0 : weights.get(weights.size() - 1));
+        }
+        return weights.size() > entries.size() ? weights.subList(0, entries.size()) : weights;
+    }
+
+    private static double windowWeight(List<Double> values, int start, int size) {
+        int end = Math.min(values.size(), start + size);
+        if(start >= end){
+            return 0.5;
+        }
+        double mean = values.subList(start, end).stream().mapToDouble(Double::doubleValue).average().orElse(0);
+        double variance = values.subList(start, end).stream()
+            .mapToDouble(value -> Math.pow(value - mean, 2))
+            .average()
+            .orElse(0);
+        return clamp(Math.sqrt(variance), 0.5, 12);
+    }
+
+    private static double weightedMean(List<Double> values, List<Double> weights) {
+        double weightedSum = 0;
+        double weightSum = 0;
+        for(int i = 0; i < values.size(); i++){
+            double weight = i < weights.size() ? weights.get(i) : 1.0;
+            weightedSum += values.get(i) * weight;
+            weightSum += weight;
+        }
+        return weightSum == 0 ? values.stream().mapToDouble(Double::doubleValue).average().orElse(100) : weightedSum / weightSum;
+    }
+
+    private static double harmonicMean(List<Double> values) {
+        if(values.stream().anyMatch(value -> value <= 0)){
+            return 0;
+        }
+        double inverseSum = values.stream().mapToDouble(value -> 1.0 / value).sum();
+        return inverseSum == 0 ? 100 : values.size() / inverseSum;
+    }
+
+    private static double clamp(double value, double min, double max) {
+        return Math.max(min, Math.min(max, value));
     }
 
     private static boolean isTopTier(String tag){
         return "Brilliant".equals(tag) || "Great".equals(tag) || "Best".equals(tag) || "Excellent".equals(tag);
     }
 
-    private String classify(double loss) {
-        double delta = Math.max(0, loss);
-        if (delta >= 7.0) return "Blunder";
-        if (delta >= 4.0) return "Mistake";
-        if (delta >= 2.0) return "Inaccuracy";
+    static double toWhitePerspective(StockfishClient.AnalysisResult result, boolean whiteToMove) {
+        double sideToMoveScore = result.scoreCp / 100.0;
+        return whiteToMove ? sideToMoveScore : -sideToMoveScore;
+    }
+
+    private String classifyWinLoss(double winLoss) {
+        if (winLoss >= 20) return "Blunder";
+        if (winLoss >= 10) return "Mistake";
+        if (winLoss >= 5) return "Inaccuracy";
         return "Good";
     }
 
-    private String determineQualityTag(boolean playedBest, double loss, double improvement, String severity) {
+    private String determineQualityTag(boolean playedBest, double winLoss, double winGain, String severity) {
         if (severity != null && severity.startsWith("Mate")) {
             return "Mate";
         }
-        double absLoss = Math.max(0, loss);
-        double absGain = Math.max(0, improvement);
-        if (playedBest && absGain >= 1.5) {
+        if (playedBest && winGain >= 10) {
             return "Brilliant";
         }
-        if (playedBest && absGain >= 0.5) {
+        if (playedBest && winGain >= 5) {
             return "Great";
         }
         if (playedBest) {
             return "Best";
         }
-        if (absLoss < 0.15) {
+        if (winLoss < 2) {
             return "Excellent";
         }
-        if (absLoss < 0.5) {
+        if (winLoss < 5) {
             return "Good";
         }
-        if (absLoss < 1.5) {
+        if (winLoss < 10) {
             return "Inaccuracy";
         }
-        if (absLoss < 4.0) {
+        if (winLoss < 20) {
             return "Mistake";
-        }
-        if (absLoss < 7.0) {
-            return "Severe Mistake";
         }
         return "Blunder";
     }

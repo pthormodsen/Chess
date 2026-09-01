@@ -1,0 +1,10 @@
+services:
+  chess:
+    build: .
+    container_name: chess-web
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8081:8081"
+    environment:
+      STOCKFISH_PATH: /usr/games/stockfish
+      SERVER_PORT: 8081

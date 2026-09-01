@@ -22,17 +22,22 @@ public class Piece {
     BufferedImage sheet;
     protected int sheetScale;
     {
-        try (InputStream spriteStream = ClassLoader.getSystemResourceAsStream("pieces.png")) {
-            if(spriteStream == null){
-                throw new IllegalStateException("Unable to locate sprite sheet 'pieces.png' on the classpath.");
+        if(GraphicsEnvironment.isHeadless()){
+            sheetScale = 100;
+            sheet = new BufferedImage(sheetScale * 6, sheetScale * 2, BufferedImage.TYPE_INT_ARGB);
+        } else {
+            try (InputStream spriteStream = Piece.class.getClassLoader().getResourceAsStream("pieces.png")) {
+                if(spriteStream == null){
+                    throw new IllegalStateException("Unable to locate sprite sheet 'pieces.png' on the classpath.");
+                }
+                sheet = ImageIO.read(spriteStream);
+                if(sheet == null){
+                    throw new IllegalStateException("Failed to decode sprite sheet 'pieces.png'.");
+                }
+                sheetScale = sheet.getWidth()/6;
+            } catch (IOException e) {
+                throw new IllegalStateException("Failed to load sprite sheet 'pieces.png'.", e);
             }
-            sheet = ImageIO.read(spriteStream);
-            if(sheet == null){
-                throw new IllegalStateException("Failed to decode sprite sheet 'pieces.png'.");
-            }
-            sheetScale = sheet.getWidth()/6;
-        } catch (IOException e) {
-            throw new IllegalStateException("Failed to load sprite sheet 'pieces.png'.", e);
         }
     }
 

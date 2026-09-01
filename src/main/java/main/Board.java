@@ -69,6 +69,7 @@ public class Board extends JPanel {
     private long whiteClockMillis = initialClockMillis;
     private long blackClockMillis = initialClockMillis;
     private javax.swing.Timer clockTimer;
+    private boolean clockStarted = false;
     private String lastResultTag = "*";
     private boolean isDraggingPiece = false;
     private int dragScreenX;
@@ -141,6 +142,7 @@ public class Board extends JPanel {
             enPassantTile,
             whiteClockMillis,
             blackClockMillis,
+            clockStarted,
             lastResultTag,
             lastMoveDeliveredCheck,
             lastMoveDeliveredMate
@@ -200,6 +202,7 @@ public class Board extends JPanel {
         enPassantTile = liveStateBackup.enPassantTile;
         whiteClockMillis = liveStateBackup.whiteClockMillis;
         blackClockMillis = liveStateBackup.blackClockMillis;
+        clockStarted = liveStateBackup.clockStarted;
         lastResultTag = liveStateBackup.lastResultTag;
         lastMoveDeliveredCheck = liveStateBackup.lastMoveDeliveredCheck;
         lastMoveDeliveredMate = liveStateBackup.lastMoveDeliveredMate;
@@ -275,6 +278,10 @@ public class Board extends JPanel {
     public void setEngineElo(int elo){
         this.engineElo = Math.max(800, Math.min(2800, elo));
         configureEngine();
+    }
+
+    public void setEngineThinkTimeMillis(long millis){
+        this.engineThinkTime = Duration.ofMillis(Math.max(100, millis));
     }
 
     public void setEnginePlaysWhite(boolean playsWhite){
@@ -353,6 +360,7 @@ public class Board extends JPanel {
             return;
         }
 
+        boolean wasWhiteToMove = isWhiteToMove;
         boolean enPassantCapture = isEnPassantCapture(move);
         boolean promotionMove = isPromotionMove(move);
         boolean kingSideCastle = isKingSideCastle(move);
@@ -393,6 +401,9 @@ public class Board extends JPanel {
 
             recordMove(move, notation);
 
+            if(!clockStarted && wasWhiteToMove){
+                startClock();
+            }
             requestEngineMoveIfNeeded();
             notifyEvaluation();
             repaint();
@@ -1639,6 +1650,145 @@ public class Board extends JPanel {
         return lastResultTag;
     }
 
+    public synchronized java.util.List<PieceView> getPieceViews(){
+        return pieceList.stream()
+            .map(piece -> new PieceView(piece.name, piece.isWhite ? "white" : "black", pieceIcon(piece), piece.col, piece.row))
+            .collect(java.util.stream.Collectors.toList());
+    }
+
+    public synchronized java.util.List<SquareView> getLegalDestinations(int col, int row){
+        Piece piece = getPiece(col, row);
+        if(piece == null || piece.isWhite != isWhiteToMove || isGameOver){
+            return java.util.List.of();
+        }
+
+        java.util.List<SquareView> destinations = new java.util.ArrayList<>();
+        for(int targetRow = 0; targetRow < rows; targetRow++){
+            for(int targetCol = 0; targetCol < cols; targetCol++){
+                Move preview = new Move(this, piece, targetCol, targetRow);
+                if(isValidMove(preview)){
+                    boolean capture = preview.capture != null || isEnPassantCapture(preview);
+                    destinations.add(new SquareView(targetCol, targetRow, capture));
+                }
+            }
+        }
+        return destinations;
+    }
+
+    public synchronized boolean playMove(int fromCol, int fromRow, int toCol, int toRow){
+        Piece piece = getPiece(fromCol, fromRow);
+        if(piece == null){
+            return false;
+        }
+        Move move = new Move(this, piece, toCol, toRow);
+        if(!isValidMove(move)){
+            return false;
+        }
+        makeMove(move);
+        return true;
+    }
+
+    public synchronized java.util.List<String> getDisplayMovesSnapshot(){
+        return new java.util.ArrayList<>(displayMoves);
+    }
+
+    public synchronized java.util.List<String> getMoveHistorySnapshot(){
+        return new java.util.ArrayList<>(moveHistory);
+    }
+
+    public synchronized String getCapturedByWhiteText(){
+        return formatCapturedList(capturedByWhite);
+    }
+
+    public synchronized String getCapturedByBlackText(){
+        return formatCapturedList(capturedByBlack);
+    }
+
+    public synchronized String getWhiteClockText(){
+        return formatClock(whiteClockMillis);
+    }
+
+    public synchronized String getBlackClockText(){
+        return formatClock(blackClockMillis);
+    }
+
+    public synchronized boolean isWhiteToMove(){
+        return isWhiteToMove;
+    }
+
+    public synchronized boolean isGameOver(){
+        return isGameOver;
+    }
+
+    public synchronized boolean isClockStarted(){
+        return clockStarted;
+    }
+
+    public synchronized boolean isEngineEnabled(){
+        return engineEnabled;
+    }
+
+    public synchronized boolean isEngineWhite(){
+        return engineIsWhite;
+    }
+
+    public synchronized int getEngineElo(){
+        return engineElo;
+    }
+
+    public synchronized long getInitialClockMinutes(){
+        return Math.max(1, Duration.ofMillis(initialClockMillis).toMinutes());
+    }
+
+    public synchronized MoveView getLastMoveView(){
+        if(lastMove == null){
+            return null;
+        }
+        return new MoveView(lastMove.oldCol, lastMove.oldRow, lastMove.newCol, lastMove.newRow);
+    }
+
+    public static final class PieceView {
+        public final String name;
+        public final String color;
+        public final String symbol;
+        public final int col;
+        public final int row;
+
+        public PieceView(String name, String color, String symbol, int col, int row) {
+            this.name = name;
+            this.color = color;
+            this.symbol = symbol;
+            this.col = col;
+            this.row = row;
+        }
+    }
+
+    public static final class SquareView {
+        public final int col;
+        public final int row;
+        public final boolean capture;
+
+        public SquareView(int col, int row, boolean capture) {
+            this.col = col;
+            this.row = row;
+            this.capture = capture;
+        }
+    }
+
+    public static final class MoveView {
+        public final int fromCol;
+        public final int fromRow;
+        public final int toCol;
+        public final int toRow;
+
+        public MoveView(int fromCol, int fromRow, int toCol, int toRow) {
+            this.fromCol = fromCol;
+            this.fromRow = fromRow;
+            this.toCol = toCol;
+            this.toRow = toRow;
+        }
+    }
+
     public void analyzeGame(java.util.function.Consumer<java.util.List<String>> consumer){
         if(analysisMode){
             restoreLiveGameState();
@@ -1687,6 +1837,18 @@ public class Board extends JPanel {
     private void resetClock(){
         whiteClockMillis = initialClockMillis;
         blackClockMillis = initialClockMillis;
+        clockStarted = false;
+        if(clockTimer != null){
+            clockTimer.stop();
+        }
+        notifyClock();
+    }
+
+    private void startClock(){
+        if(clockStarted){
+            return;
+        }
+        clockStarted = true;
         if(clockTimer != null){
             clockTimer.stop();
         }
@@ -1697,6 +1859,9 @@ public class Board extends JPanel {
 
     private void tickClock(){
         if(!isGameActive){
+            return;
+        }
+        if(!clockStarted){
             return;
         }
         if(isWhiteToMove){
@@ -1938,6 +2103,7 @@ public class Board extends JPanel {
         final int enPassantTile;
         final long whiteClockMillis;
         final long blackClockMillis;
+        final boolean clockStarted;
         final String lastResultTag;
         final boolean lastMoveDeliveredCheck;
         final boolean lastMoveDeliveredMate;
@@ -1958,6 +2124,7 @@ public class Board extends JPanel {
                       int enPassantTile,
                       long whiteClockMillis,
                       long blackClockMillis,
+                      boolean clockStarted,
                       String lastResultTag,
                       boolean lastMoveDeliveredCheck,
                       boolean lastMoveDeliveredMate){
@@ -1977,6 +2144,7 @@ public class Board extends JPanel {
             this.enPassantTile = enPassantTile;
             this.whiteClockMillis = whiteClockMillis;
             this.blackClockMillis = blackClockMillis;
+            this.clockStarted = clockStarted;
             this.lastResultTag = lastResultTag;
             this.lastMoveDeliveredCheck = lastMoveDeliveredCheck;
             this.lastMoveDeliveredMate = lastMoveDeliveredMate;
