@@ -22,7 +22,8 @@ body {
 }
 
 button,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -519,6 +520,7 @@ select {
 
 .metric-strip > div,
 .move-list,
+.import-panel,
 .hint-line,
 .error-box {
   border: 1px solid #45423c;
@@ -797,6 +799,58 @@ select {
   border-bottom: 1px solid #45423c;
 }
 
+.panel-header.compact {
+  padding: 10px 12px;
+}
+
+.import-panel {
+  display: grid;
+  gap: 10px;
+  padding-bottom: 10px;
+}
+
+.import-panel textarea {
+  width: calc(100% - 20px);
+  margin: 0 10px;
+  resize: vertical;
+  min-height: 112px;
+  border: 1px solid #575246;
+  border-radius: 5px;
+  background: #201f1d;
+  color: #f7f4ec;
+  padding: 10px;
+  line-height: 1.35;
+}
+
+.import-panel textarea::placeholder {
+  color: #827b70;
+}
+
+.import-panel > .secondary-action {
+  margin: 0 10px;
+}
+
+.file-picker {
+  position: relative;
+  height: 32px;
+  min-width: 64px;
+  display: grid;
+  place-items: center;
+  border-radius: 5px;
+  background: #45423c;
+  color: #f6f3ec;
+  cursor: pointer;
+  text-transform: none;
+  font-size: 13px;
+}
+
+.file-picker input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
 .moves {
   max-height: 370px;
   overflow: auto;
@@ -850,7 +904,22 @@ select {
     grid-template-columns: 1fr;
   }
 
-  .side-panel {
-    order: -1;
+  .controls-row,
+  .metric-strip,
+  .action-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .clock {
+    min-width: 88px;
+    font-size: 22px;
+  }
+
+  .piece {
+    font-size: clamp(32px, 11vw, 68px);
+  }
+
+  .accuracy-grid {
+    grid-template-columns: repeat(2, 1fr);
   }
 }

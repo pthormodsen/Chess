@@ -67,6 +67,15 @@ function scoreText(value) {
   return `${value > 0 ? '+' : ''}${value.toFixed(2)}`
 }
 
+function getSessionId() {
+  const key = 'chess.sessionId'
+  const existing = window.localStorage.getItem(key)
+  if (existing) return existing
+  const generated = window.crypto?.randomUUID?.() ?? `session-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  window.localStorage.setItem(key, generated)
+  return generated
+}
+
 export default function App() {
   const [game, setGame] = useState(null)
   const [selected, setSelected] = useState(null)
@@ -80,10 +89,13 @@ export default function App() {
   const [engineElo, setEngineElo] = useState(1200)
   const [copyLabel, setCopyLabel] = useState('Copy PGN')
   const [dragOrigin, setDragOrigin] = useState(null)
+  const [pgnText, setPgnText] = useState('')
+  const [importing, setImporting] = useState(false)
 
   useEffect(() => {
+    axios.defaults.headers.common['X-Chess-Session'] = getSessionId()
     refreshGame()
-    const id = window.setInterval(refreshGame, 1000)
+    const id = window.setInterval(refreshGame, 2500)
     return () => window.clearInterval(id)
   }, [])
 
@@ -281,6 +293,38 @@ export default function App() {
     }
   }
 
+  async function importPgn() {
+    if (!pgnText.trim()) {
+      setError('Paste PGN text or upload a .pgn file first.')
+      return
+    }
+    setImporting(true)
+    try {
+      const response = await axios.post('/api/game/import-pgn', { pgn: pgnText })
+      applyGameState(response.data)
+      setSelected(null)
+      setLegalMoves([])
+      setError(null)
+    } catch (err) {
+      setError(formatApiError(err))
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  async function handlePgnFile(event) {
+    const file = event.target.files?.[0]
+    if (!file) return
+    try {
+      setPgnText(await file.text())
+      setError(null)
+    } catch (err) {
+      setError(`Could not read PGN file: ${err.message}`)
+    } finally {
+      event.target.value = ''
+    }
+  }
+
   async function stepAnalysis(direction) {
     try {
       const endpoint = direction < 0 ? '/api/game/analysis/previous' : '/api/game/analysis/next'
@@ -471,6 +515,25 @@ export default function App() {
             <button type="button" className="secondary-action" onClick={copyPgn}>{copyLabel}</button>
             <button type="button" className="secondary-action" onClick={analyzeGame} disabled={analyzing}>
               {analyzing ? 'Analyzing...' : 'Analyze'}
+            </button>
+          </div>
+
+          <div className="import-panel">
+            <div className="panel-header compact">
+              <h2>Import PGN</h2>
+              <label className="file-picker">
+                File
+                <input type="file" accept=".pgn,.txt" onChange={handlePgnFile} />
+              </label>
+            </div>
+            <textarea
+              value={pgnText}
+              onChange={event => setPgnText(event.target.value)}
+              placeholder='Paste PGN, e.g. 1. e4 c6 2. Qh5 d5'
+              rows={5}
+            />
+            <button type="button" className="secondary-action" onClick={importPgn} disabled={importing}>
+              {importing ? 'Importing...' : 'Import for review'}
             </button>
           </div>
 

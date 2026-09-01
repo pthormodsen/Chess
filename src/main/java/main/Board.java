@@ -1688,6 +1688,15 @@ public class Board extends JPanel {
         return true;
     }
 
+    public synchronized boolean playUciMove(String uciMove){
+        Move move = createMoveFromUci(uciMove);
+        if(move == null || !isValidMove(move)){
+            return false;
+        }
+        makeMove(move);
+        return true;
+    }
+
     public synchronized java.util.List<String> getDisplayMovesSnapshot(){
         return new java.util.ArrayList<>(displayMoves);
     }
