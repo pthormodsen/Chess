@@ -90,12 +90,13 @@ export default function App() {
   const [copyLabel, setCopyLabel] = useState('Copy PGN')
   const [dragOrigin, setDragOrigin] = useState(null)
   const [pgnText, setPgnText] = useState('')
+  const [showImport, setShowImport] = useState(false)
   const [importing, setImporting] = useState(false)
 
   useEffect(() => {
     axios.defaults.headers.common['X-Chess-Session'] = getSessionId()
     refreshGame()
-    const id = window.setInterval(refreshGame, 2500)
+    const id = window.setInterval(refreshGame, 1000)
     return () => window.clearInterval(id)
   }, [])
 
@@ -231,10 +232,12 @@ export default function App() {
   }
 
   async function submitMove(fromCol, fromRow, toCol, toRow) {
+    const scrollPosition = { left: window.scrollX, top: window.scrollY }
     setPending(true)
     try {
       const response = await axios.post('/api/game/move', { fromCol, fromRow, toCol, toRow })
       applyGameState(response.data.state)
+      window.requestAnimationFrame(() => window.scrollTo(scrollPosition.left, scrollPosition.top))
       setSelected(null)
       setLegalMoves([])
       setError(null)
@@ -304,6 +307,7 @@ export default function App() {
       applyGameState(response.data)
       setSelected(null)
       setLegalMoves([])
+      setShowImport(false)
       setError(null)
     } catch (err) {
       setError(formatApiError(err))
@@ -317,6 +321,7 @@ export default function App() {
     if (!file) return
     try {
       setPgnText(await file.text())
+      setShowImport(true)
       setError(null)
     } catch (err) {
       setError(`Could not read PGN file: ${err.message}`)
@@ -417,6 +422,7 @@ export default function App() {
                               setDragOrigin({ col: piece.col, row: piece.row })
                               selectPiece(piece)
                             }}
+                            onDragEnd={() => setDragOrigin(null)}
                             className={`piece ${piece.color}`}
                           >
                             {piece.symbol}
@@ -516,26 +522,31 @@ export default function App() {
             <button type="button" className="secondary-action" onClick={analyzeGame} disabled={analyzing}>
               {analyzing ? 'Analyzing...' : 'Analyze'}
             </button>
-          </div>
-
-          <div className="import-panel">
-            <div className="panel-header compact">
-              <h2>Import PGN</h2>
-              <label className="file-picker">
-                File
-                <input type="file" accept=".pgn,.txt" onChange={handlePgnFile} />
-              </label>
-            </div>
-            <textarea
-              value={pgnText}
-              onChange={event => setPgnText(event.target.value)}
-              placeholder='Paste PGN, e.g. 1. e4 c6 2. Qh5 d5'
-              rows={5}
-            />
-            <button type="button" className="secondary-action" onClick={importPgn} disabled={importing}>
-              {importing ? 'Importing...' : 'Import for review'}
+            <button type="button" className="secondary-action" onClick={() => setShowImport(value => !value)}>
+              {showImport ? 'Hide import' : 'Import PGN'}
             </button>
           </div>
+
+          {showImport && (
+            <div className="import-panel">
+              <div className="panel-header compact">
+                <h2>Import PGN</h2>
+                <label className="file-picker">
+                  File
+                  <input type="file" accept=".pgn,.txt" onChange={handlePgnFile} />
+                </label>
+              </div>
+              <textarea
+                value={pgnText}
+                onChange={event => setPgnText(event.target.value)}
+                placeholder='Paste PGN, e.g. 1. e4 c6 2. Qh5 d5'
+                rows={5}
+              />
+              <button type="button" className="secondary-action" onClick={importPgn} disabled={importing}>
+                {importing ? 'Importing...' : 'Import for review'}
+              </button>
+            </div>
+          )}
 
           <AnalysisPanel
             game={game}
@@ -555,10 +566,6 @@ export default function App() {
                 <div className="move-row" key={`${move}-${index}`}>{move}</div>
               ))}
             </div>
-          </div>
-
-          <div className="hint-line">
-            During review, the colored arrow is the played move and the green arrow is Stockfish's best move.
           </div>
 
           {error && <div className="error-box">{error}</div>}
@@ -581,8 +588,11 @@ function BoardArrow({ move, tone, label }) {
 
   const ux = dx / length
   const uy = dy / length
-  const headLength = 4.2
-  const headWidth = 4.8
+  const startInset = Math.min(1.8, length * 0.16)
+  const headLength = 3.3
+  const headWidth = 3.7
+  const startX = fromX + ux * startInset
+  const startY = fromY + uy * startInset
   const shaftEndX = toX - ux * headLength
   const shaftEndY = toY - uy * headLength
   const leftX = shaftEndX - uy * headWidth / 2
@@ -592,7 +602,7 @@ function BoardArrow({ move, tone, label }) {
 
   return (
     <svg className={`board-arrow ${tone}`} viewBox="0 0 100 100" aria-label={label}>
-      <line className="arrow-shaft" x1={fromX} y1={fromY} x2={shaftEndX} y2={shaftEndY} />
+      <line className="arrow-shaft" x1={startX} y1={startY} x2={shaftEndX} y2={shaftEndY} />
       <polygon className="arrow-head" points={`${toX},${toY} ${leftX},${leftY} ${rightX},${rightY}`} />
     </svg>
   )
@@ -637,11 +647,9 @@ function AnalysisPanel({ game, analyzing, onPrevious, onNext, onExit }) {
 
       {summary ? (
         <>
-          <div className="accuracy-grid">
-            <div><span>White</span><strong>{summary.whiteAccuracy.toFixed(1)}%</strong></div>
-            <div><span>Black</span><strong>{summary.blackAccuracy.toFixed(1)}%</strong></div>
-            <div><span>Best</span><strong>{summary.bestCount}</strong></div>
-            <div><span>Blunders</span><strong>{summary.blunders}</strong></div>
+          <div className="side-summary-grid">
+            <SideSummaryCard color="White" summary={summary.white} fallbackAccuracy={summary.whiteAccuracy} />
+            <SideSummaryCard color="Black" summary={summary.black} fallbackAccuracy={summary.blackAccuracy} />
           </div>
           <EvalGraph entries={game.analysisEntries ?? []} currentPly={frame?.plyIndex ?? -1} />
         </>
@@ -657,6 +665,36 @@ function AnalysisPanel({ game, analyzing, onPrevious, onNext, onExit }) {
 
       <div className="report-lines">
         {report.slice(0, 8).map((line, index) => <div key={`${line}-${index}`}>{line}</div>)}
+      </div>
+    </div>
+  )
+}
+
+function SideSummaryCard({ color, summary, fallbackAccuracy }) {
+  const safeSummary = summary ?? {
+    accuracy: fallbackAccuracy ?? 100,
+    best: 0,
+    excellent: 0,
+    good: 0,
+    inaccuracies: 0,
+    mistakes: 0,
+    blunders: 0,
+    totalMoves: 0
+  }
+
+  return (
+    <div className="side-summary-card">
+      <div className="side-summary-heading">
+        <span>{color}</span>
+        <strong>{safeSummary.accuracy.toFixed(1)}%</strong>
+      </div>
+      <div className="side-summary-counts">
+        <span>Best <strong>{safeSummary.best}</strong></span>
+        <span>Excellent <strong>{safeSummary.excellent}</strong></span>
+        <span>Good <strong>{safeSummary.good}</strong></span>
+        <span>Inaccuracy <strong>{safeSummary.inaccuracies}</strong></span>
+        <span>Mistake <strong>{safeSummary.mistakes}</strong></span>
+        <span>Blunder <strong>{safeSummary.blunders}</strong></span>
       </div>
     </div>
   )

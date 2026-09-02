@@ -15,7 +15,10 @@ public final class GameReviewFormatter {
         List<String> lines = new ArrayList<>();
         lines.add("Game Review powered by Stockfish");
         lines.add("Accuracy: White " + fmt(summary.whiteAccuracy) + "% | Black " + fmt(summary.blackAccuracy) + "%");
-        lines.add("Blunders: " + summary.blunders + ", Mistakes: " + summary.mistakes + ", Inaccuracies: " + summary.inaccuracies);
+        lines.add("White: Best " + summary.white.best + ", Inaccuracies " + summary.white.inaccuracies
+            + ", Mistakes " + summary.white.mistakes + ", Blunders " + summary.white.blunders);
+        lines.add("Black: Best " + summary.black.best + ", Inaccuracies " + summary.black.inaccuracies
+            + ", Mistakes " + summary.black.mistakes + ", Blunders " + summary.black.blunders);
         lines.add("Avg loss: " + fmt(summary.avgLoss) + " pawns | Max loss: " + fmt(summary.maxLoss));
         lines.add("---");
 

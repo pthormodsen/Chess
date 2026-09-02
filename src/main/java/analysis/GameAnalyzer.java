@@ -101,6 +101,8 @@ public class GameAnalyzer {
         public final double minLoss;
         public final double whiteAccuracy;
         public final double blackAccuracy;
+        public final SideSummary white;
+        public final SideSummary black;
         public final int totalMoves;
         public final List<Entry> entries;
 
@@ -112,14 +114,63 @@ public class GameAnalyzer {
             this.mistakes = (int) entries.stream().filter(e -> winPercentLoss(e) >= 10 && winPercentLoss(e) < 20).count();
             this.blunders = (int) entries.stream().filter(e -> winPercentLoss(e) >= 20).count();
             this.bestCount = (int) entries.stream()
-                .filter(e -> isTopTier(e.qualityTag))
+                .filter(e -> "Best".equals(e.qualityTag))
                 .count();
             this.accuracyScore = computeAccuracy(entries);
             this.maxLoss = entries.stream().mapToDouble(e -> Math.max(0, e.loss)).max().orElse(0);
             this.minLoss = entries.stream().mapToDouble(e -> Math.max(0, e.loss)).min().orElse(0);
-            this.whiteAccuracy = computeSideAccuracy(entries, true);
-            this.blackAccuracy = computeSideAccuracy(entries, false);
+            this.white = SideSummary.from(entries, true);
+            this.black = SideSummary.from(entries, false);
+            this.whiteAccuracy = white.accuracy;
+            this.blackAccuracy = black.accuracy;
         }
+    }
+
+    public static final class SideSummary {
+        public final double accuracy;
+        public final int best;
+        public final int excellent;
+        public final int good;
+        public final int inaccuracies;
+        public final int mistakes;
+        public final int blunders;
+        public final int totalMoves;
+
+        private SideSummary(double accuracy, int best, int excellent, int good, int inaccuracies,
+                            int mistakes, int blunders, int totalMoves) {
+            this.accuracy = accuracy;
+            this.best = best;
+            this.excellent = excellent;
+            this.good = good;
+            this.inaccuracies = inaccuracies;
+            this.mistakes = mistakes;
+            this.blunders = blunders;
+            this.totalMoves = totalMoves;
+        }
+
+        static SideSummary from(List<Entry> entries, boolean white) {
+            List<Entry> sideEntries = sideEntries(entries, white);
+            return new SideSummary(
+                computeAccuracy(sideEntries),
+                countTag(sideEntries, "Best") + countTag(sideEntries, "Brilliant") + countTag(sideEntries, "Great"),
+                countTag(sideEntries, "Excellent"),
+                countTag(sideEntries, "Good"),
+                (int) sideEntries.stream().filter(e -> winPercentLoss(e) >= 5 && winPercentLoss(e) < 10).count(),
+                (int) sideEntries.stream().filter(e -> winPercentLoss(e) >= 10 && winPercentLoss(e) < 20).count(),
+                (int) sideEntries.stream().filter(e -> winPercentLoss(e) >= 20).count(),
+                sideEntries.size()
+            );
+        }
+    }
+
+    private static List<Entry> sideEntries(List<Entry> entries, boolean white) {
+        return entries.stream()
+            .filter(e -> e.isWhite == white)
+            .toList();
+    }
+
+    private static int countTag(List<Entry> entries, String tag) {
+        return (int) entries.stream().filter(e -> tag.equals(e.qualityTag)).count();
     }
 
     private static double computeSideAccuracy(List<Entry> entries, boolean white) {
@@ -149,7 +200,24 @@ public class GameAnalyzer {
             return 100;
         }
         double raw = 103.1668100711649 * Math.exp(-0.04354415386753951 * winLoss) - 3.166924740191411;
-        return clamp(raw + 1, 0, 100);
+        double capped = capNonBestMove(entry, raw);
+        return clamp(capped, 0, 100);
+    }
+
+    private static double capNonBestMove(Entry entry, double moveAccuracy) {
+        boolean playedBest = entry.bestMove != null && entry.bestMove.equals(entry.playedMove);
+        if(playedBest || "Brilliant".equals(entry.qualityTag) || "Great".equals(entry.qualityTag)){
+            return moveAccuracy;
+        }
+        double cap = switch (entry.qualityTag) {
+            case "Excellent" -> 96;
+            case "Good" -> 91;
+            case "Inaccuracy" -> 78;
+            case "Mistake" -> 58;
+            case "Blunder" -> 28;
+            default -> 96;
+        };
+        return Math.min(moveAccuracy, cap);
     }
 
     static double winPercentLoss(Entry entry) {
@@ -229,10 +297,6 @@ public class GameAnalyzer {
 
     private static double clamp(double value, double min, double max) {
         return Math.max(min, Math.min(max, value));
-    }
-
-    private static boolean isTopTier(String tag){
-        return "Brilliant".equals(tag) || "Great".equals(tag) || "Best".equals(tag) || "Excellent".equals(tag);
     }
 
     static double toWhitePerspective(StockfishClient.AnalysisResult result, boolean whiteToMove) {

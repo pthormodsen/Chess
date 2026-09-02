@@ -21,6 +21,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 import java.util.function.Consumer;
 import javazoom.jl.player.Player;
@@ -61,13 +62,16 @@ public class Board extends JPanel {
     private ExecutorService analysisExecutor = Executors.newSingleThreadExecutor();
     private boolean engineEnabled = false;
     private boolean engineIsWhite = false;
+    private volatile boolean engineThinking = false;
     private boolean flipBoard = false;
     private int engineSkillLevel = 8;
     private int engineElo = 1200;
-    private Duration engineThinkTime = Duration.ofMillis(500);
+    private Duration engineThinkTime = Duration.ofMillis(1200);
+    private int timeControlMinutes = 10;
     private long initialClockMillis = Duration.ofMinutes(10).toMillis();
     private long whiteClockMillis = initialClockMillis;
     private long blackClockMillis = initialClockMillis;
+    private long lastClockUpdateMillis = 0L;
     private javax.swing.Timer clockTimer;
     private boolean clockStarted = false;
     private String lastResultTag = "*";
@@ -262,6 +266,7 @@ public class Board extends JPanel {
 
     public void setTimeControlMinutes(int minutes){
         int sanitized = Math.max(1, minutes);
+        timeControlMinutes = sanitized;
         initialClockMillis = Duration.ofMinutes(sanitized).toMillis();
         if(!isGameActive){
             whiteClockMillis = initialClockMillis;
@@ -277,6 +282,8 @@ public class Board extends JPanel {
 
     public void setEngineElo(int elo){
         this.engineElo = Math.max(800, Math.min(2800, elo));
+        updateEngineSkillLevelForElo();
+        updateEngineThinkTimeForElo();
         configureEngine();
     }
 
@@ -295,6 +302,7 @@ public class Board extends JPanel {
     public void setHumanVsHuman(boolean enabled){
         this.engineEnabled = !enabled && stockfishClient != null;
         if(enabled){
+            engineThinking = false;
             shutdownEngine();
         } else if(stockfishClient == null){
             initializeEngineIntegration();
@@ -358,6 +366,9 @@ public class Board extends JPanel {
     private void makeMove(Move move, boolean triggerSideEffects){
         if(triggerSideEffects && !isGameActive){
             return;
+        }
+        if(triggerSideEffects){
+            settleClock();
         }
 
         boolean wasWhiteToMove = isWhiteToMove;
@@ -655,6 +666,7 @@ public class Board extends JPanel {
     private void finishGame(String message){
         isGameOver = true;
         isGameActive = false;
+        lastClockUpdateMillis = 0L;
         if(clockTimer != null){
             clockTimer.stop();
         }
@@ -718,6 +730,7 @@ public class Board extends JPanel {
         if(clockConsumer == null){
             return;
         }
+        settleClock();
         clockConsumer.accept(formatClock(whiteClockMillis), formatClock(blackClockMillis));
     }
 
@@ -1202,17 +1215,116 @@ public class Board extends JPanel {
         if(isWhiteToMove != engineIsWhite){
             return;
         }
+        if(engineThinking){
+            return;
+        }
+        engineThinking = true;
+        notifyClock();
         final String moves = String.join(" ", moveHistory);
+        final Duration thinkTime = dynamicEngineThinkTime();
         engineExecutor.submit(() -> {
             try{
-                String uciMove = stockfishClient.requestBestMove(moves, engineThinkTime);
+                String uciMove = stockfishClient.requestBestMove(moves, thinkTime);
                 if(uciMove != null){
-                    SwingUtilities.invokeLater(() -> applyUciMove(uciMove));
+                    SwingUtilities.invokeLater(() -> {
+                        try{
+                            applyUciMove(uciMove);
+                        } finally {
+                            engineThinking = false;
+                            notifyClock();
+                        }
+                    });
+                } else {
+                    engineThinking = false;
+                    notifyClock();
                 }
             } catch (IOException e){
+                engineThinking = false;
+                notifyClock();
                 System.err.println("Engine failure: " + e.getMessage());
             }
         });
+    }
+
+    private void updateEngineThinkTimeForElo(){
+        long millis;
+        if(engineElo <= 1000){
+            millis = 700;
+        } else if(engineElo <= 1200){
+            millis = 900;
+        } else if(engineElo <= 1400){
+            millis = 1100;
+        } else if(engineElo <= 1600){
+            millis = 1350;
+        } else if(engineElo <= 1800){
+            millis = 1600;
+        } else if(engineElo <= 2000){
+            millis = 1900;
+        } else if(engineElo <= 2200){
+            millis = 2300;
+        } else if(engineElo <= 2400){
+            millis = 2700;
+        } else {
+            millis = 3200;
+        }
+        engineThinkTime = Duration.ofMillis(millis);
+    }
+
+    private void updateEngineSkillLevelForElo(){
+        if(engineElo <= 900){
+            engineSkillLevel = 1;
+        } else if(engineElo <= 1100){
+            engineSkillLevel = 3;
+        } else if(engineElo <= 1300){
+            engineSkillLevel = 5;
+        } else if(engineElo <= 1500){
+            engineSkillLevel = 7;
+        } else if(engineElo <= 1700){
+            engineSkillLevel = 9;
+        } else if(engineElo <= 1900){
+            engineSkillLevel = 11;
+        } else if(engineElo <= 2100){
+            engineSkillLevel = 13;
+        } else if(engineElo <= 2300){
+            engineSkillLevel = 15;
+        } else if(engineElo <= 2500){
+            engineSkillLevel = 17;
+        } else {
+            engineSkillLevel = 20;
+        }
+    }
+
+    private Duration dynamicEngineThinkTime(){
+        long baseMillis = engineThinkTime.toMillis();
+        double timeFactor = timeControlFactor();
+        long jitter = ThreadLocalRandom.current().nextLong(-220, 381);
+        long openingAdjustment = moveHistory.size() < 10 ? -120 : 0;
+        long endgameAdjustment = pieceList.size() <= 12 ? 250 : 0;
+        long scaledBaseMillis = Math.round(baseMillis * timeFactor);
+        long millis = Math.max(500, Math.min(5200, scaledBaseMillis + jitter + openingAdjustment + endgameAdjustment));
+        return Duration.ofMillis(millis);
+    }
+
+    private double timeControlFactor(){
+        if(timeControlMinutes <= 1){
+            return 0.65;
+        }
+        if(timeControlMinutes <= 3){
+            return 0.85;
+        }
+        if(timeControlMinutes <= 5){
+            return 1.0;
+        }
+        if(timeControlMinutes <= 10){
+            return 1.35;
+        }
+        if(timeControlMinutes <= 15){
+            return 1.55;
+        }
+        if(timeControlMinutes <= 30){
+            return 1.85;
+        }
+        return 2.1;
     }
 
     private void applyUciMove(String uciMove){
@@ -1714,10 +1826,12 @@ public class Board extends JPanel {
     }
 
     public synchronized String getWhiteClockText(){
+        settleClock();
         return formatClock(whiteClockMillis);
     }
 
     public synchronized String getBlackClockText(){
+        settleClock();
         return formatClock(blackClockMillis);
     }
 
@@ -1844,8 +1958,10 @@ public class Board extends JPanel {
     }
 
     private void resetClock(){
+        engineThinking = false;
         whiteClockMillis = initialClockMillis;
         blackClockMillis = initialClockMillis;
+        lastClockUpdateMillis = 0L;
         clockStarted = false;
         if(clockTimer != null){
             clockTimer.stop();
@@ -1858,6 +1974,7 @@ public class Board extends JPanel {
             return;
         }
         clockStarted = true;
+        lastClockUpdateMillis = System.currentTimeMillis();
         if(clockTimer != null){
             clockTimer.stop();
         }
@@ -1867,31 +1984,49 @@ public class Board extends JPanel {
     }
 
     private void tickClock(){
-        if(!isGameActive){
-            return;
-        }
-        if(!clockStarted){
-            return;
-        }
-        if(isWhiteToMove){
-            whiteClockMillis = Math.max(0, whiteClockMillis - 1000);
-            if(whiteClockMillis == 0){
-                finishGame("Black wins on time");
-                notifyClock();
-                return;
-            }
-        } else {
-            blackClockMillis = Math.max(0, blackClockMillis - 1000);
-            if(blackClockMillis == 0){
-                finishGame("White wins on time");
-                notifyClock();
-                return;
-            }
-        }
+        settleClock();
         notifyClock();
     }
 
+    private synchronized void settleClock(){
+        if(!isGameActive || isGameOver){
+            lastClockUpdateMillis = 0L;
+            return;
+        }
+        if(!clockStarted){
+            lastClockUpdateMillis = 0L;
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if(lastClockUpdateMillis <= 0L){
+            lastClockUpdateMillis = now;
+            return;
+        }
+        if(engineThinking){
+            lastClockUpdateMillis = now;
+            return;
+        }
+        long elapsed = Math.max(0L, now - lastClockUpdateMillis);
+        if(elapsed <= 0L){
+            return;
+        }
+        lastClockUpdateMillis = now;
+        if(isWhiteToMove){
+            whiteClockMillis = Math.max(0, whiteClockMillis - elapsed);
+            if(whiteClockMillis == 0){
+                finishGame("Black wins on time");
+                return;
+            }
+        } else {
+            blackClockMillis = Math.max(0, blackClockMillis - elapsed);
+            if(blackClockMillis == 0){
+                finishGame("White wins on time");
+            }
+        }
+    }
+
     private void shutdownEngine(){
+        engineThinking = false;
         engineEnabled = false;
         if(engineExecutor != null){
             engineExecutor.shutdownNow();

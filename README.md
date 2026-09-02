@@ -1,92 +1,237 @@
-# Chess (Swing + Web + Stockfish)
+# Chess
 
-This is a simple chess project with a Swing desktop GUI and a Spring Boot powered web version. The desktop app lets you play as White against the Stockfish engine. The web app serves a React frontend from the Spring Boot jar and exposes Stockfish through `/api/engine`.
+Chess is a Java chess project with two interfaces:
+
+- A Swing desktop app.
+- A Spring Boot + React web app for browser play, Stockfish review, and self-hosting.
+
+The web version is designed to run on a home Ubuntu server behind Cloudflare Tunnel.
+
+## Features
+
+- Play human vs human in the browser.
+- Play against Stockfish with configurable side and Elo.
+- Import PGN text or `.pgn` / `.txt` files for review.
+- Run game review with Stockfish best moves, move classifications, arrows, eval graph, and accuracy.
+- Anonymous per-browser sessions using `localStorage`, so different visitors do not share the same board.
+- Mobile-friendly board layout with touch scroll locking while moving pieces.
+- Timer starts after White makes the first move, not when the game is created.
 
 ## Requirements
 
-- macOS/Linux/Windows with Java 17+
+Local development:
+
+- Java 17+
 - Maven 3.9+
-- Stockfish binary (macOS ARM build shown below, but any UCI-compatible Stockfish works)
-- Node.js 20+ if you want to build the frontend outside Docker
+- Node.js 20+
+- Stockfish binary for your OS
 
-## Setup
+Server deployment:
 
-1. **Clone the repo**
-   ```bash
-   git clone https://github.com/<your-account>/Chess.git
-   cd Chess
-   ```
+- Ubuntu with Docker and Docker Compose plugin
+- Cloudflare Tunnel, if exposing through `chess.patreek.no`
 
-2. **Download Stockfish**
-   - Grab a binary from [https://stockfishchess.org/download/](https://stockfishchess.org/download/).
-   - Place it in `engines/stockfish/` (create the folder if it doesn’t exist).
-   - Example path: `engines/stockfish/stockfish-macos-m1-apple-silicon`.
-   - Mark it executable on macOS/Linux:
-     ```bash
-     chmod +x engines/stockfish/stockfish-macos-m1-apple-silicon
-     ```
+## Local Development
 
-3. **Set the Stockfish path**
-   - Export the env var in the terminal you’ll use:
-     ```bash
-     export STOCKFISH_PATH=/absolute/path/to/stockfish-binary
-     ```
-   - If you run from an IDE, add the same path as an environment variable or JVM property (`-Dstockfish.path=...`).
-
-4. **Build & run the desktop app**
-   ```bash
-   mvn clean package
-   java -cp target/classes main.Main
-   ```
-   (Alternatively, run `./run.sh`, which builds and launches with the env var baked in.)
-
-## Web version
-
-For local frontend development:
+Start the Spring Boot backend from the project root:
 
 ```bash
-cd frontend
-npm ci
+cd /Users/patrik/Documents/Prosjekter/Chess
+./run-web.sh
+```
+
+The backend runs on:
+
+```text
+http://localhost:8081
+```
+
+In another terminal, start the React/Vite frontend:
+
+```bash
+cd /Users/patrik/Documents/Prosjekter/Chess/frontend
 npm run dev
 ```
 
-Run the Spring Boot API separately from the project root:
-
-```bash
-export STOCKFISH_PATH=/absolute/path/to/stockfish-binary
-mvn spring-boot:run -Dspring-boot.run.main-class=server.ServerApplication
-```
-
-Vite runs on `http://localhost:3000` and proxies `/api` and `/ws` to Spring Boot on port `8081`.
-
-## Self-host on Ubuntu with Docker Compose
-
-On the Ubuntu server, install Docker and the Compose plugin, then from the project directory run:
-
-```bash
-docker compose up -d --build
-```
-
-The container installs Stockfish during the image build. Docker Compose publishes it on port `8080`:
+Open:
 
 ```text
-http://<server-ip>:8080
+http://localhost:3000
 ```
 
-For a domain name, put a reverse proxy such as Caddy, Nginx Proxy Manager, or Nginx in front of the container and forward traffic to `localhost:8080`. If you expose it outside your home network, enable HTTPS at the proxy and avoid publishing extra ports.
+Vite proxies `/api` and `/ws` to Spring Boot on port `8081`.
 
-## Using the app
+## Local Stockfish
 
-- Click **Play** to start a game. The Stockfish side moves automatically.
-- Use the **Difficulty** dropdown to adjust Stockfish’s “Skill Level” (0–20). You can change it even mid-game.
-- The top-left shows:
-  - Material evaluation (e.g., “White +3”).
-  - Captured pieces for each color using chess Unicode icons.
-- The centered label shows whose turn it is or the result (White/Black wins, stalemate, insufficient material, etc.).
-- The board highlights legal moves for the selected piece; the last move is shown with a yellow overlay.
+`run-web.sh` sets `STOCKFISH_PATH` to the bundled local path:
+
+```bash
+/Users/patrik/Documents/Prosjekter/Chess/engines/stockfish/stockfish-macos-m1-apple-silicon
+```
+
+To use another Stockfish binary:
+
+```bash
+export STOCKFISH_PATH=/absolute/path/to/stockfish
+./run-web.sh
+```
+
+## Desktop App
+
+Build and run the Swing version:
+
+```bash
+mvn clean package
+java -cp target/classes main.Main
+```
+
+Or use:
+
+```bash
+./run.sh
+```
+
+## Server Deployment
+
+On the Ubuntu server, the project is expected at:
+
+```text
+/home/pmt/web/Chess
+```
+
+Deploy or update:
+
+```bash
+cd /home/pmt/web/Chess
+./deploy.sh
+```
+
+`deploy.sh` runs:
+
+```bash
+git pull --ff-only origin main
+docker compose up -d --build
+docker compose ps
+```
+
+The Docker image builds the React frontend, packages the Spring Boot app, and installs Stockfish inside the container.
+
+## Docker Compose
+
+The app is bound to localhost only:
+
+```yaml
+ports:
+  - "127.0.0.1:8081:8081"
+```
+
+That means it is not directly exposed to the LAN or internet. Cloudflare Tunnel or another reverse proxy should forward public traffic to:
+
+```text
+http://localhost:8081
+```
+
+Inside Docker, Stockfish is installed at:
+
+```text
+/usr/games/stockfish
+```
+
+## Cloudflare Tunnel
+
+Your tunnel config should contain an ingress rule like:
+
+```yaml
+- hostname: chess.patreek.no
+  service: http://localhost:8081
+```
+
+The DNS record in Cloudflare should be:
+
+```text
+Type: CNAME
+Name: chess
+Target: <tunnel-id>.cfargotunnel.com
+Proxy status: Proxied
+TTL: Auto
+```
+
+After changing the tunnel config:
+
+```bash
+sudo systemctl restart cloudflared
+```
+
+Check the deployed app:
+
+```bash
+curl -I http://localhost:8081
+curl -I https://chess.patreek.no
+```
+
+## Updating The Server
+
+After local changes are working:
+
+```bash
+cd /Users/patrik/Documents/Prosjekter/Chess
+git status
+git add .
+git commit -m "Update chess web app"
+git push
+```
+
+Then on Ubuntu:
+
+```bash
+ssh pmt@pmt-server
+cd /home/pmt/web/Chess
+./deploy.sh
+```
+
+## PGN Review
+
+In the web app:
+
+1. Paste PGN into **Import PGN**, or upload a `.pgn` / `.txt` file.
+2. Click **Import for review**.
+3. Click **Analyze**.
+4. Use **Previous** / **Next**, or keyboard arrow keys on desktop, to step through the review.
+
+The backend parses SAN PGN with `chesslib`, converts it to UCI, then replays the moves through the Java board validation.
+
+## Sessions And Accounts
+
+The current web app uses anonymous per-browser sessions. Each browser stores a generated session id in `localStorage` and sends it as `X-Chess-Session`.
+
+This prevents public users from sharing the same active game, but it is not a full account system. Real accounts, saved games, login, and persistent review history would require adding a database and authentication.
+
+## Troubleshooting
+
+If the deployed site does not update:
+
+```bash
+cd /home/pmt/web/Chess
+git pull --ff-only origin main
+docker compose up -d --build
+docker compose logs -f chess
+```
+
+If the browser says DNS cannot resolve:
+
+```bash
+dig +short chess.patreek.no
+```
+
+If analysis fails, confirm Stockfish exists inside the container:
+
+```bash
+docker exec -it chess-web which stockfish
+docker exec -it chess-web /usr/games/stockfish
+```
 
 ## Notes
 
-- This codebase was produced with AI assistance; double-check logic before shipping it into production.
-- Stockfish binaries are large; they’re intentionally not tracked in git. Each user must supply their own copy.
-- The Docker image uses Java 17 and installs Stockfish inside the runtime container.
+- Stockfish runs server-side. Any phone or computer using `chess.patreek.no` sends requests to the Ubuntu server; it does not need Stockfish installed locally.
+- The server container uses Java 17.
+- Local development uses the Mac Stockfish binary configured in `run-web.sh`.

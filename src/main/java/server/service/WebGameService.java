@@ -359,6 +359,8 @@ public class WebGameService {
         int blunders,
         double avgLoss,
         double maxLoss,
+        SideSummaryView white,
+        SideSummaryView black,
         int totalMoves
     ) {
         static AnalysisSummaryView from(GameAnalyzer.Summary summary) {
@@ -375,6 +377,35 @@ public class WebGameService {
                 summary.blunders,
                 summary.avgLoss,
                 summary.maxLoss,
+                SideSummaryView.from(summary.white),
+                SideSummaryView.from(summary.black),
+                summary.totalMoves
+            );
+        }
+    }
+
+    public record SideSummaryView(
+        double accuracy,
+        int best,
+        int excellent,
+        int good,
+        int inaccuracies,
+        int mistakes,
+        int blunders,
+        int totalMoves
+    ) {
+        static SideSummaryView from(GameAnalyzer.SideSummary summary) {
+            if(summary == null){
+                return null;
+            }
+            return new SideSummaryView(
+                summary.accuracy,
+                summary.best,
+                summary.excellent,
+                summary.good,
+                summary.inaccuracies,
+                summary.mistakes,
+                summary.blunders,
                 summary.totalMoves
             );
         }
