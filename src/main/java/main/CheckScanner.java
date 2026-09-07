@@ -48,7 +48,20 @@ public class CheckScanner {
 
         if (move.capture != null && col == move.capture.col && row == move.capture.row) return null;
 
+        if (isEnPassantCapturedPiece(col, row, move)) return null;
+
         return board.getPiece(col, row);
+    }
+
+    private boolean isEnPassantCapturedPiece(int col, int row, Move move) {
+        if (!"Pawn".equals(move.piece.name) || move.capture != null || board.enPassantTile == -1) {
+            return false;
+        }
+        if (board.getTileNum(move.newCol, move.newRow) != board.enPassantTile) {
+            return false;
+        }
+        int capturedPawnRow = move.newRow + (move.piece.isWhite ? 1 : -1);
+        return col == move.newCol && row == capturedPawnRow;
     }
 
     private boolean hitByRook(Move move, Piece king, int kingCol, int kingRow, int colVal, int rowVal) {

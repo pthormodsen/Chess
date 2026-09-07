@@ -4,7 +4,10 @@ import org.junit.jupiter.api.Test;
 import pieces.Bishop;
 import pieces.King;
 import pieces.Pawn;
+import pieces.Queen;
 import pieces.Rook;
+
+import java.lang.reflect.Field;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -108,6 +111,55 @@ class BoardTest {
         assertEquals(5, blackPawn.row);
     }
 
+    @Test
+    void blackClockRunsWhileEngineIsThinking() throws Exception {
+        Board board = createBoardWithKings(4, 7, 4, 0);
+        board.pieceList.add(new Rook(board, 0, 7, true));
+
+        King whiteKing = (King) board.getPiece(4, 7);
+        Move move = new Move(board, whiteKing, 4, 6);
+        assertTrue(board.isValidMove(move));
+        board.makeMove(move);
+
+        setPrivateField(board, "engineThinking", true);
+        setPrivateField(board, "lastClockUpdateMillis", System.currentTimeMillis() - 2500);
+
+        assertEquals("09:57", board.getBlackClockText());
+    }
+
+    @Test
+    void cannotCaptureKing() {
+        Board board = createBoardWithKings(0, 7, 4, 0);
+        Queen queen = new Queen(board, 4, 6, true);
+        board.pieceList.add(queen);
+
+        Move captureKing = new Move(board, queen, 4, 0);
+
+        assertFalse(board.isValidMove(captureKing));
+        assertFalse(board.playMove(4, 6, 4, 0));
+        assertSame(queen, board.getPiece(4, 6));
+        assertNotNull(board.getPiece(4, 0));
+    }
+
+    @Test
+    void enPassantCannotExposeKingToRook() throws Exception {
+        Board board = createBoardWithKings(7, 3, 7, 0);
+        board.pieceList.add(new Rook(board, 0, 3, false));
+        Pawn blackPawn = new Pawn(board, 1, 1, false);
+        Pawn whitePawn = new Pawn(board, 2, 3, true);
+        board.pieceList.add(blackPawn);
+        board.pieceList.add(whitePawn);
+
+        setPrivateField(board, "isWhiteToMove", false);
+        Move blackDoublePush = new Move(board, blackPawn, 1, 3);
+        assertTrue(board.isValidMove(blackDoublePush));
+        board.makeMove(blackDoublePush);
+
+        Move illegalEnPassant = new Move(board, whitePawn, 1, 2);
+
+        assertFalse(board.isValidMove(illegalEnPassant));
+    }
+
     private Board createBoardWithKings(int whiteCol, int whiteRow, int blackCol, int blackRow) {
         Board board = new Board();
         board.pieceList.clear();
@@ -115,5 +167,11 @@ class BoardTest {
         board.pieceList.add(new King(board, blackCol, blackRow, false));
         board.enableManualSetup();
         return board;
+    }
+
+    private void setPrivateField(Board board, String fieldName, Object value) throws Exception {
+        Field field = Board.class.getDeclaredField(fieldName);
+        field.setAccessible(true);
+        field.set(board, value);
     }
 }

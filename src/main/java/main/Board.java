@@ -513,6 +513,10 @@ public class Board extends JPanel {
             return false;
         }
 
+        if(move.capture != null && "King".equals(move.capture.name)){
+            return false;
+        }
+
         if(!move.piece.isValidMovement(move.newCol, move.newRow)){
             return false;
         }
@@ -1999,10 +2003,6 @@ public class Board extends JPanel {
         }
         long now = System.currentTimeMillis();
         if(lastClockUpdateMillis <= 0L){
-            lastClockUpdateMillis = now;
-            return;
-        }
-        if(engineThinking){
             lastClockUpdateMillis = now;
             return;
         }
