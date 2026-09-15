@@ -3,7 +3,7 @@ set -e
 
 echo "=== Deploying Chess application ==="
 
-cd /home/pmt/web/Chess
+cd /home/pmt/docker/Chess
 
 echo "=== Pulling latest changes ==="
 git pull --ff-only origin main
