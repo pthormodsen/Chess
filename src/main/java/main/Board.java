@@ -19,6 +19,7 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
@@ -63,6 +64,14 @@ public class Board extends JPanel {
     private boolean engineEnabled = false;
     private boolean engineIsWhite = false;
     private volatile boolean engineThinking = false;
+    // Bumped whenever a pending engine/analysis result must be ignored (new game, side change, shutdown, ...).
+    private long engineRequestId = 0L;
+    private long analysisRequestId = 0L;
+    // While held (server setup phase), configuration changes never trigger an engine move.
+    private boolean engineOnHold = false;
+    // Server mode: no eager Stockfish, no Swing clock timer, async results applied via callbackExecutor instead of the EDT.
+    private final boolean serverMode;
+    private final Executor callbackExecutor;
     private boolean flipBoard = false;
     private int engineSkillLevel = 8;
     private int engineElo = 1200;
@@ -75,6 +84,9 @@ public class Board extends JPanel {
     private javax.swing.Timer clockTimer;
     private boolean clockStarted = false;
     private String lastResultTag = "*";
+    // Why the game ended, decided by board rules / clocks (never by engine evaluation). Null while the game is running.
+    private GameEndReason gameEndReason;
+    private String gameEndMessage;
     private boolean isDraggingPiece = false;
     private int dragScreenX;
     private int dragScreenY;
@@ -110,13 +122,29 @@ public class Board extends JPanel {
 
 
     public Board() {
+        this(null);
+    }
+
+    /**
+     * Creates a board for headless server use when {@code callbackExecutor} is non-null. Engine moves and
+     * analysis results are then handed to that executor (which must serialize them with the caller's own
+     * locking) instead of the Swing EDT, Stockfish is only started when engine play is enabled, and the
+     * clock is settled on read instead of by a Swing timer.
+     */
+    public Board(Executor callbackExecutor) {
+        this.serverMode = callbackExecutor != null;
+        this.callbackExecutor = serverMode ? callbackExecutor : SwingUtilities::invokeLater;
         this.setPreferredSize(new Dimension(cols * tileSize + coordinateMargin * 2, rows * tileSize + coordinateMargin * 2));
         this.setBackground(new Color(43, 43, 43));
         this.setOpaque(true);
         this.addMouseListener(input);
         this.addMouseMotionListener(input);
         loadPositionFromFEN(fenStartingPosition);
-        initializeEngineIntegration();
+        if(serverMode){
+            resolveEnginePath();
+        } else {
+            initializeEngineIntegration();
+        }
         loadSounds();
         updateCheckMarkers();
     }
@@ -292,6 +320,9 @@ public class Board extends JPanel {
     }
 
     public void setEnginePlaysWhite(boolean playsWhite){
+        if(engineIsWhite != playsWhite){
+            cancelPendingEngineMove();
+        }
         this.engineIsWhite = playsWhite;
         this.flipBoard = playsWhite;
         if(isGameActive && isWhiteToMove == engineIsWhite){
@@ -307,6 +338,9 @@ public class Board extends JPanel {
         } else if(stockfishClient == null){
             initializeEngineIntegration();
         }
+        if(engineEnabled && isGameActive){
+            requestEngineMoveIfNeeded();
+        }
     }
 
     public boolean isGameActive(){
@@ -315,6 +349,8 @@ public class Board extends JPanel {
 
     public void startNewGame(){
         clearAnalysisReview();
+        gameEndReason = null;
+        gameEndMessage = null;
         loadPositionFromFEN(fenStartingPosition);
         isGameActive = true;
         lastResultTag = "*";
@@ -364,11 +400,11 @@ public class Board extends JPanel {
     }
 
     private void makeMove(Move move, boolean triggerSideEffects){
-        if(triggerSideEffects && !isGameActive){
-            return;
-        }
         if(triggerSideEffects){
             settleClock();
+        }
+        if(triggerSideEffects && !isGameActive){
+            return;
         }
 
         boolean wasWhiteToMove = isWhiteToMove;
@@ -383,6 +419,10 @@ public class Board extends JPanel {
             movePawn(move);
         } else if(move.piece.name.equals("King")){
             moveKing(move);
+        }
+        if(!move.piece.name.equals("Pawn")){
+            // An en passant chance only exists for the move directly after a double pawn push.
+            enPassantTile = -1;
         }
 
         move.piece.col = move.newCol;
@@ -456,8 +496,11 @@ public class Board extends JPanel {
         //en passant
         int colorIndex = move.piece.isWhite ? 1 : -1;
 
-        if(getTileNum(move.newCol, move.newRow) == enPassantTile){
-            move.capture = getPiece(move.newCol, move.newRow + colorIndex);
+        if(getTileNum(move.newCol, move.newRow) == enPassantTile && move.newCol != move.oldCol){
+            Piece passed = getPiece(move.newCol, move.newRow + colorIndex);
+            if(passed != null && "Pawn".equals(passed.name) && passed.isWhite != move.piece.isWhite){
+                move.capture = passed;
+            }
         }
 
         if(Math.abs(move.piece.row - move.newRow) == 2){
@@ -474,9 +517,26 @@ public class Board extends JPanel {
     }
 
     private void promotePawn(Move move) {
-        pieceList.add(new Queen(this, move.newCol, move.newRow, move.piece.isWhite));
+        pieceList.add(createPromotionPiece(move.promotion, move.newCol, move.newRow, move.piece.isWhite));
         removePiece(move.piece);
         move.isPromotion = true;
+    }
+
+    private Piece createPromotionPiece(char promotion, int col, int row, boolean isWhite){
+        switch (promotion){
+            case 'r':
+                return new Rook(this, col, row, isWhite);
+            case 'b':
+                return new Bishop(this, col, row, isWhite);
+            case 'n':
+                return new Knight(this, col, row, isWhite);
+            default:
+                return new Queen(this, col, row, isWhite);
+        }
+    }
+
+    static boolean isValidPromotion(char promotion){
+        return promotion == 'q' || promotion == 'r' || promotion == 'b' || promotion == 'n';
     }
 
     public void capture(Piece piece, boolean notify){
@@ -502,6 +562,10 @@ public class Board extends JPanel {
     public boolean isValidMove(Move move){
 
         if(isGameOver){
+            return false;
+        }
+
+        if(!isInsideBoard(move.oldCol, move.oldRow) || !isInsideBoard(move.newCol, move.newRow)){
             return false;
         }
 
@@ -647,16 +711,14 @@ public class Board extends JPanel {
         boolean kingChecked = checkScanner.isKingChecked(kingMove);
         lastMoveDeliveredCheck = kingChecked;
         if(checkScanner.isGameOver(king)){
-            String message;
             if(kingChecked){
                 lastMoveDeliveredMate = true;
-                message = isWhiteToMove ? "Black wins!" : "White wins!";
+                finishGame(GameEndReason.CHECKMATE, isWhiteToMove ? Boolean.FALSE : Boolean.TRUE);
             } else {
-                message = "Stalemate!";
+                finishGame(GameEndReason.STALEMATE, null);
             }
-            finishGame(message);
         } else if (insufficientMaterial(true) && insufficientMaterial(false)) {
-            finishGame("Draw: Insufficient material!");
+            finishGame(GameEndReason.INSUFFICIENT_MATERIAL, null);
         } else if (kingChecked){
             playSound(checkSound);
             if(statusConsumer != null){
@@ -667,21 +729,39 @@ public class Board extends JPanel {
         }
     }
 
-    private void finishGame(String message){
+    /** How a finished game ended. Only board rules and clocks decide this. */
+    public enum GameEndReason {
+        CHECKMATE("checkmate"),
+        TIMEOUT("timeout"),
+        STALEMATE("stalemate"),
+        INSUFFICIENT_MATERIAL("insufficient-material");
+
+        public final String code;
+
+        GameEndReason(String code) {
+            this.code = code;
+        }
+    }
+
+    /** @param whiteWon TRUE/FALSE for a decisive result, null for a draw. */
+    private void finishGame(GameEndReason reason, Boolean whiteWon){
+        String winner = Boolean.TRUE.equals(whiteWon) ? "White" : "Black";
+        String message = switch (reason) {
+            case CHECKMATE -> winner + " won by checkmate";
+            case TIMEOUT -> winner + " won on time";
+            case STALEMATE -> "Draw by stalemate";
+            case INSUFFICIENT_MATERIAL -> "Draw by insufficient material";
+        };
         isGameOver = true;
         isGameActive = false;
+        gameEndReason = reason;
+        gameEndMessage = message;
         lastClockUpdateMillis = 0L;
         if(clockTimer != null){
             clockTimer.stop();
         }
         playSound(notifySound);
-        if(message.contains("White wins")){
-            lastResultTag = "1-0";
-        } else if(message.contains("Black wins")){
-            lastResultTag = "0-1";
-        } else {
-            lastResultTag = "1/2-1/2";
-        }
+        lastResultTag = whiteWon == null ? "1/2-1/2" : (whiteWon ? "1-0" : "0-1");
         if(statusConsumer != null){
             statusConsumer.accept(message);
         }
@@ -1180,28 +1260,38 @@ public class Board extends JPanel {
     }
 
 
-    private void initializeEngineIntegration(){
+    private Path resolveEnginePath(){
+        if(engineBinaryPath != null){
+            return engineBinaryPath;
+        }
         String configuredPath = System.getenv("STOCKFISH_PATH");
         if(configuredPath == null){
             configuredPath = System.getProperty("stockfish.path");
         }
         if(configuredPath == null){
-            return;
+            return null;
         }
 
         Path enginePath = Paths.get(configuredPath);
         if(!Files.exists(enginePath)){
             System.err.println("Stockfish engine not found at " + enginePath.toAbsolutePath());
+            return null;
+        }
+        engineBinaryPath = enginePath;
+        return enginePath;
+    }
+
+    private void initializeEngineIntegration(){
+        Path enginePath = resolveEnginePath();
+        if(enginePath == null){
             return;
         }
 
         try{
-            engineBinaryPath = enginePath;
             stockfishClient = new StockfishClient(enginePath);
             configureEngine();
             engineExecutor = Executors.newSingleThreadExecutor();
             engineEnabled = true;
-            engineIsWhite = false;
             System.out.println("Stockfish ready on path " + enginePath.toAbsolutePath());
         } catch (IOException e){
             System.err.println("Unable to start Stockfish: " + e.getMessage());
@@ -1209,7 +1299,7 @@ public class Board extends JPanel {
     }
 
     private void requestEngineMoveIfNeeded(){
-        if(!engineEnabled || stockfishClient == null || engineExecutor == null || !isGameActive){
+        if(engineOnHold || !engineEnabled || stockfishClient == null || engineExecutor == null || !isGameActive){
             return;
         }
         if(isGameOver){
@@ -1224,30 +1314,59 @@ public class Board extends JPanel {
         }
         engineThinking = true;
         notifyClock();
+        final long requestId = ++engineRequestId;
+        final int plyAtRequest = moveHistory.size();
         final String moves = String.join(" ", moveHistory);
         final Duration thinkTime = dynamicEngineThinkTime();
+        final StockfishClient client = stockfishClient;
         engineExecutor.submit(() -> {
+            String uciMove = null;
             try{
-                String uciMove = stockfishClient.requestBestMove(moves, thinkTime);
-                if(uciMove != null){
-                    SwingUtilities.invokeLater(() -> {
-                        try{
-                            applyUciMove(uciMove);
-                        } finally {
-                            engineThinking = false;
-                            notifyClock();
-                        }
-                    });
-                } else {
-                    engineThinking = false;
-                    notifyClock();
-                }
-            } catch (IOException e){
-                engineThinking = false;
-                notifyClock();
+                uciMove = client.requestBestMove(moves, thinkTime);
+            } catch (IOException | RuntimeException e){
                 System.err.println("Engine failure: " + e.getMessage());
             }
+            final String bestMove = uciMove;
+            callbackExecutor.execute(() -> {
+                synchronized (this) {
+                    if(requestId != engineRequestId){
+                        return; // superseded by a new game, side change or shutdown
+                    }
+                    engineThinking = false;
+                    try{
+                        boolean stillEngineTurn = engineEnabled && isGameActive && !analysisMode
+                            && isWhiteToMove == engineIsWhite && moveHistory.size() == plyAtRequest;
+                        if(bestMove != null && stillEngineTurn){
+                            applyUciMove(bestMove);
+                        }
+                    } finally {
+                        notifyClock();
+                    }
+                }
+            });
         });
+    }
+
+    /**
+     * Holds or releases engine play. Holding cancels any pending engine move (its result is discarded);
+     * releasing lets the engine move immediately if it is its turn.
+     */
+    public synchronized void setEngineOnHold(boolean hold){
+        if(hold == engineOnHold){
+            return;
+        }
+        engineOnHold = hold;
+        if(hold){
+            cancelPendingEngineMove();
+            notifyClock();
+        } else {
+            requestEngineMoveIfNeeded();
+        }
+    }
+
+    private void cancelPendingEngineMove(){
+        engineRequestId++;
+        engineThinking = false;
     }
 
     private void updateEngineThinkTimeForElo(){
@@ -1347,15 +1466,26 @@ public class Board extends JPanel {
         int toCol = uci.charAt(2) - 'a';
         int toRow = rows - Character.getNumericValue(uci.charAt(3));
 
+        if(!isInsideBoard(fromCol, fromRow) || !isInsideBoard(toCol, toRow)){
+            return null;
+        }
         Piece piece = getPiece(fromCol, fromRow);
         if(piece == null){
             return null;
         }
-        return new Move(this, piece, toCol, toRow);
+        Move move = new Move(this, piece, toCol, toRow);
+        if(uci.length() >= 5){
+            char promotion = Character.toLowerCase(uci.charAt(4));
+            if(!isValidPromotion(promotion)){
+                return null;
+            }
+            move.promotion = promotion;
+        }
+        return move;
     }
 
     private void recordMove(Move move, String notation){
-        moveHistory.add(toUci(move.oldCol, move.oldRow, move.newCol, move.newRow, move.piece));
+        moveHistory.add(toUci(move.oldCol, move.oldRow, move.newCol, move.newRow, move.piece, move.promotion));
         if(move.piece.isWhite){
             int moveNumber = displayMoves.size() + 1;
             displayMoves.add(moveNumber + ". " + notation);
@@ -1371,14 +1501,14 @@ public class Board extends JPanel {
         notifyMoveLog();
     }
 
-    private String toUci(int fromCol, int fromRow, int toCol, int toRow, Piece piece){
+    private String toUci(int fromCol, int fromRow, int toCol, int toRow, Piece piece, char promotion){
         StringBuilder sb = new StringBuilder();
         sb.append(squareName(fromCol, fromRow));
         sb.append(squareName(toCol, toRow));
         if("Pawn".equals(piece.name)){
             int promotionRank = piece.isWhite ? 0 : 7;
             if(toRow == promotionRank){
-                sb.append('q');
+                sb.append(promotion);
             }
         }
         return sb.toString();
@@ -1398,6 +1528,7 @@ public class Board extends JPanel {
         isGameActive = false;
         isGameOver = false;
         engineEnabled = false;
+        cancelPendingEngineMove();
         bestMoveArrow = null;
         currentQualityTag = null;
         reviewUciMoves = new ArrayList<>(movesUci);
@@ -1510,12 +1641,16 @@ public class Board extends JPanel {
             bestMoveArrow = null;
         }
 
+        boolean finalPly = analysisPointer >= 0 && analysisPointer == reviewSanMoves.size() - 1;
         analysisFrameConsumer.accept(new AnalysisFrame(
             analysisPointer,
             reviewSanMoves.size(),
             san,
             entry,
-            lastAnalysisSummary
+            lastAnalysisSummary,
+            san != null && san.endsWith("#"),
+            finalPly ? gameEndReason : null,
+            finalPly ? gameEndMessage : null
         ));
         repaint();
     }
@@ -1557,10 +1692,6 @@ public class Board extends JPanel {
         if(entry == null){
             return false;
         }
-        String severity = entry.severity;
-        if(severity != null && severity.startsWith("Mate")){
-            return true;
-        }
         if(entry.bestMove == null || entry.playedMove == null){
             return false;
         }
@@ -1568,6 +1699,7 @@ public class Board extends JPanel {
     }
 
     private void clearAnalysisReview(){
+        analysisRequestId++;
         analysisMode = false;
         analysisSnapshots.clear();
         analysisPointer = -1;
@@ -1629,7 +1761,7 @@ public class Board extends JPanel {
         }
         sb.append(squareName(move.newCol, move.newRow));
         if(isPromotion){
-            sb.append("=Q");
+            sb.append('=').append(Character.toUpperCase(move.promotion));
         }
         return sb.toString();
     }
@@ -1766,6 +1898,14 @@ public class Board extends JPanel {
         return lastResultTag;
     }
 
+    public synchronized GameEndReason getGameEndReason(){
+        return gameEndReason;
+    }
+
+    public synchronized String getGameEndMessage(){
+        return gameEndMessage;
+    }
+
     public synchronized java.util.List<PieceView> getPieceViews(){
         return pieceList.stream()
             .map(piece -> new PieceView(piece.name, piece.isWhite ? "white" : "black", pieceIcon(piece), piece.col, piece.row))
@@ -1773,8 +1913,12 @@ public class Board extends JPanel {
     }
 
     public synchronized java.util.List<SquareView> getLegalDestinations(int col, int row){
+        if(!isInsideBoard(col, row)){
+            return java.util.List.of();
+        }
+
         Piece piece = getPiece(col, row);
-        if(piece == null || piece.isWhite != isWhiteToMove || isGameOver){
+        if(piece == null || piece.isWhite != isWhiteToMove || isGameOver || !isGameActive || isEngineTurn()){
             return java.util.List.of();
         }
 
@@ -1792,11 +1936,28 @@ public class Board extends JPanel {
     }
 
     public synchronized boolean playMove(int fromCol, int fromRow, int toCol, int toRow){
+        return playMove(fromCol, fromRow, toCol, toRow, 'q');
+    }
+
+    /** Plays a human move; rejected while the game is inactive, under review, or when it is the engine's turn. */
+    public synchronized boolean playMove(int fromCol, int fromRow, int toCol, int toRow, char promotion){
+        if(!isInsideBoard(fromCol, fromRow) || !isInsideBoard(toCol, toRow)){
+            return false;
+        }
+        if(!isValidPromotion(promotion)){
+            return false;
+        }
+        settleClock();
+        if(!isGameActive || analysisMode || isEngineTurn()){
+            return false;
+        }
+
         Piece piece = getPiece(fromCol, fromRow);
         if(piece == null){
             return false;
         }
         Move move = new Move(this, piece, toCol, toRow);
+        move.promotion = promotion;
         if(!isValidMove(move)){
             return false;
         }
@@ -1805,6 +1966,9 @@ public class Board extends JPanel {
     }
 
     public synchronized boolean playUciMove(String uciMove){
+        if(!isGameActive){
+            return false;
+        }
         Move move = createMoveFromUci(uciMove);
         if(move == null || !isValidMove(move)){
             return false;
@@ -1857,6 +2021,15 @@ public class Board extends JPanel {
 
     public synchronized boolean isEngineWhite(){
         return engineIsWhite;
+    }
+
+    /** True while engine play is on and the side to move belongs to the engine. */
+    public synchronized boolean isEngineTurn(){
+        return engineEnabled && !engineOnHold && isGameActive && !analysisMode && isWhiteToMove == engineIsWhite;
+    }
+
+    public boolean isEngineThinking(){
+        return engineThinking;
     }
 
     public synchronized int getEngineElo(){
@@ -1920,24 +2093,39 @@ public class Board extends JPanel {
         if(analysisMode){
             restoreLiveGameState();
         }
-        if(engineBinaryPath == null){
+        Path enginePath = resolveEnginePath();
+        if(enginePath == null){
             consumer.accept(java.util.List.of("Engine path not configured. Set STOCKFISH_PATH to enable analysis."));
             return;
         }
+        final long requestId = ++analysisRequestId;
+        final String endMessage = gameEndMessage;
         List<String> movesCopy = new ArrayList<>(moveHistory);
         List<String> sanCopy = new ArrayList<>(sanHistory);
         analysisExecutor.submit(() -> {
+            GameAnalyzer.Summary summary = null;
+            List<String> report;
             try{
-                GameAnalyzer analyzer = new GameAnalyzer(engineBinaryPath, Duration.ofMillis(800));
-                GameAnalyzer.Summary summary = analyzer.analyze(movesCopy);
-                List<String> report = GameReviewFormatter.buildReport(summary, sanCopy);
-                SwingUtilities.invokeLater(() -> {
-                    prepareAnalysisReview(summary, movesCopy, sanCopy);
-                    consumer.accept(report);
-                });
-            } catch (IOException e){
-                SwingUtilities.invokeLater(() -> consumer.accept(java.util.List.of("Analysis failed: " + e.getMessage())));
+                GameAnalyzer analyzer = new GameAnalyzer(enginePath, Duration.ofMillis(800));
+                summary = analyzer.analyze(movesCopy);
+                report = GameReviewFormatter.buildReport(summary, sanCopy, endMessage);
+            } catch (Exception e){
+                report = java.util.List.of("Analysis failed: " + e.getMessage());
             }
+            final GameAnalyzer.Summary result = summary;
+            final List<String> lines = report;
+            callbackExecutor.execute(() -> {
+                synchronized (this) {
+                    if(result == null){
+                        consumer.accept(lines);
+                    } else if(requestId != analysisRequestId || analysisMode || !moveHistory.equals(movesCopy)){
+                        consumer.accept(java.util.List.of("The game changed while the analysis was running. Press Analyze again."));
+                    } else {
+                        prepareAnalysisReview(result, movesCopy, sanCopy);
+                        consumer.accept(lines);
+                    }
+                }
+            });
         });
     }
 
@@ -1962,7 +2150,7 @@ public class Board extends JPanel {
     }
 
     private void resetClock(){
-        engineThinking = false;
+        cancelPendingEngineMove();
         whiteClockMillis = initialClockMillis;
         blackClockMillis = initialClockMillis;
         lastClockUpdateMillis = 0L;
@@ -1981,6 +2169,11 @@ public class Board extends JPanel {
         lastClockUpdateMillis = System.currentTimeMillis();
         if(clockTimer != null){
             clockTimer.stop();
+        }
+        if(serverMode){
+            // Server clocks are settled on every read/move instead of by an EDT timer.
+            notifyClock();
+            return;
         }
         clockTimer = new javax.swing.Timer(1000, e -> tickClock());
         clockTimer.start();
@@ -2014,19 +2207,19 @@ public class Board extends JPanel {
         if(isWhiteToMove){
             whiteClockMillis = Math.max(0, whiteClockMillis - elapsed);
             if(whiteClockMillis == 0){
-                finishGame("Black wins on time");
+                finishGame(GameEndReason.TIMEOUT, Boolean.FALSE);
                 return;
             }
         } else {
             blackClockMillis = Math.max(0, blackClockMillis - elapsed);
             if(blackClockMillis == 0){
-                finishGame("White wins on time");
+                finishGame(GameEndReason.TIMEOUT, Boolean.TRUE);
             }
         }
     }
 
     private void shutdownEngine(){
-        engineThinking = false;
+        cancelPendingEngineMove();
         engineEnabled = false;
         if(engineExecutor != null){
             engineExecutor.shutdownNow();
@@ -2039,6 +2232,17 @@ public class Board extends JPanel {
             }
             stockfishClient = null;
         }
+    }
+
+    /** Releases the clock timer, engine process and worker threads. The board must not be used afterwards. */
+    public synchronized void dispose(){
+        cancelPendingEngineMove();
+        analysisRequestId++;
+        if(clockTimer != null){
+            clockTimer.stop();
+        }
+        shutdownEngine();
+        analysisExecutor.shutdownNow();
     }
 
     private void configureEngine(){
@@ -2143,14 +2347,28 @@ public class Board extends JPanel {
         public final String san;
         public final GameAnalyzer.Entry entry;
         public final GameAnalyzer.Summary summary;
+        /** True only if this move checkmated according to the board rules (SAN ends with '#'). */
+        public final boolean deliveredMate;
+        /** Set on the final ply of a finished game: how it actually ended (e.g. on time), else null. */
+        public final GameEndReason gameEndReason;
+        public final String gameEndMessage;
 
         public AnalysisFrame(int plyIndex, int totalPlies, String san,
                              GameAnalyzer.Entry entry, GameAnalyzer.Summary summary) {
+            this(plyIndex, totalPlies, san, entry, summary, false, null, null);
+        }
+
+        public AnalysisFrame(int plyIndex, int totalPlies, String san,
+                             GameAnalyzer.Entry entry, GameAnalyzer.Summary summary,
+                             boolean deliveredMate, GameEndReason gameEndReason, String gameEndMessage) {
             this.plyIndex = plyIndex;
             this.totalPlies = totalPlies;
             this.san = san;
             this.entry = entry;
             this.summary = summary;
+            this.deliveredMate = deliveredMate;
+            this.gameEndReason = gameEndReason;
+            this.gameEndMessage = gameEndMessage;
         }
 
         public boolean hasMove(){

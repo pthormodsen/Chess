@@ -41,6 +41,12 @@ public class GameController {
         return gameService.startNewGame(sessionId, request);
     }
 
+    @PostMapping("/start")
+    public GameState start(@RequestHeader(value = "X-Chess-Session", required = false) String sessionId,
+                           @RequestBody(required = false) NewGameRequest request) {
+        return gameService.startGame(sessionId, request);
+    }
+
     @PostMapping("/settings")
     public GameState settings(@RequestHeader(value = "X-Chess-Session", required = false) String sessionId,
                               @RequestBody GameSettingsRequest request) {
@@ -69,19 +75,16 @@ public class GameController {
         return new PgnResponse(gameService.pgn(sessionId));
     }
 
+    /** Starts a background review; the returned state has analysisStatus "running" until polling sees it finish. */
     @PostMapping("/analyze")
-    public GameState analyze(@RequestHeader(value = "X-Chess-Session", required = false) String sessionId) throws Exception {
-        return gameService.analyze(sessionId).get();
+    public GameState analyze(@RequestHeader(value = "X-Chess-Session", required = false) String sessionId) {
+        return gameService.analyze(sessionId);
     }
 
     @PostMapping("/import-pgn")
-    public ResponseEntity<?> importPgn(@RequestHeader(value = "X-Chess-Session", required = false) String sessionId,
-                                       @RequestBody PgnImportRequest request) {
-        try {
-            return ResponseEntity.ok(gameService.importPgn(sessionId, request));
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(java.util.Map.of("error", e.getMessage()));
-        }
+    public GameState importPgn(@RequestHeader(value = "X-Chess-Session", required = false) String sessionId,
+                               @RequestBody PgnImportRequest request) {
+        return gameService.importPgn(sessionId, request);
     }
 
     @PostMapping("/analysis/previous")

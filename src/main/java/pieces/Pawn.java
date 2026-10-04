@@ -45,17 +45,21 @@ public class Pawn extends Piece {
         }
 
         //en passant left
-        if(board.getTileNum(col, row) == board.enPassantTile && col == this.col - 1 && row == this.row - colorIndex && board.getPiece(col, row + colorIndex) != null){
+        if(board.getTileNum(col, row) == board.enPassantTile && col == this.col - 1 && row == this.row - colorIndex && isEnemyPawn(board.getPiece(col, row + colorIndex))){
             return true;
         }
 
         //en passant right
-        if(board.getTileNum(col, row) == board.enPassantTile && col == this.col + 1 && row == this.row - colorIndex && board.getPiece(col, row + colorIndex) != null){
+        if(board.getTileNum(col, row) == board.enPassantTile && col == this.col + 1 && row == this.row - colorIndex && isEnemyPawn(board.getPiece(col, row + colorIndex))){
             return true;
         }
 
         return false;
 
+    }
+
+    private boolean isEnemyPawn(Piece piece){
+        return piece != null && "Pawn".equals(piece.name) && piece.isWhite != isWhite;
     }
 
 

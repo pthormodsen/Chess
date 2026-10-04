@@ -12,8 +12,16 @@ public final class GameReviewFormatter {
     private GameReviewFormatter() {}
 
     public static List<String> buildReport(GameAnalyzer.Summary summary, List<String> sanMoves) {
+        return buildReport(summary, sanMoves, null);
+    }
+
+    /** @param gameEndMessage how the game actually ended (e.g. "White won on time"), or null if unfinished. */
+    public static List<String> buildReport(GameAnalyzer.Summary summary, List<String> sanMoves, String gameEndMessage) {
         List<String> lines = new ArrayList<>();
         lines.add("Game Review powered by Stockfish");
+        if (gameEndMessage != null) {
+            lines.add("Result: " + gameEndMessage);
+        }
         lines.add("Accuracy: White " + fmt(summary.whiteAccuracy) + "% | Black " + fmt(summary.blackAccuracy) + "%");
         lines.add("White: Best " + summary.white.best + ", Inaccuracies " + summary.white.inaccuracies
             + ", Mistakes " + summary.white.mistakes + ", Blunders " + summary.white.blunders);
@@ -28,9 +36,7 @@ public final class GameReviewFormatter {
             String moveLabel = buildMoveLabel(i, entry, sanMoves);
             StringBuilder sb = new StringBuilder();
             sb.append(moveLabel).append(" → ").append(labelFor(entry.qualityTag));
-            if (!entry.severity.startsWith("Mate")) {
-                sb.append(" (loss ").append(fmt(entry.loss)).append(")");
-            }
+            sb.append(" (loss ").append(fmt(entry.loss)).append(")");
             sb.append(" | Best: ").append(entry.bestMove == null ? "n/a" : entry.bestMove);
             if (!entry.bestLine.isEmpty()) {
                 sb.append(" | Line: ").append(String.join(" ", limitPv(entry.bestLine, 6)));

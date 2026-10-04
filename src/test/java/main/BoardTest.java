@@ -3,6 +3,7 @@ package main;
 import org.junit.jupiter.api.Test;
 import pieces.Bishop;
 import pieces.King;
+import pieces.Knight;
 import pieces.Pawn;
 import pieces.Queen;
 import pieces.Rook;
@@ -142,6 +143,21 @@ class BoardTest {
     }
 
     @Test
+    void rejectsMovesOutsideBoard() {
+        Board board = createBoardWithKings(4, 7, 4, 0);
+        Queen queen = new Queen(board, 3, 6, true);
+        board.pieceList.add(queen);
+
+        Move offBoardMove = new Move(board, queen, -1, 6);
+
+        assertFalse(board.isValidMove(offBoardMove));
+        assertFalse(board.playMove(3, 6, -1, 6));
+        assertFalse(board.playMove(-1, 6, 3, 6));
+        assertSame(queen, board.getPiece(3, 6));
+        assertTrue(board.getLegalDestinations(-1, 6).isEmpty());
+    }
+
+    @Test
     void enPassantCannotExposeKingToRook() throws Exception {
         Board board = createBoardWithKings(7, 3, 7, 0);
         board.pieceList.add(new Rook(board, 0, 3, false));
@@ -158,6 +174,111 @@ class BoardTest {
         Move illegalEnPassant = new Move(board, whitePawn, 1, 2);
 
         assertFalse(board.isValidMove(illegalEnPassant));
+    }
+
+    @Test
+    void enPassantExpiresAfterAnyOtherMove() {
+        // Regression: the en passant square used to survive non-pawn moves, allowing a late capture.
+        Board board = startedServerBoard();
+        for (String uci : new String[]{"e2e4", "g8f6", "e4e5", "d7d5", "g1f3", "b8c6"}) {
+            assertTrue(board.playUciMove(uci), uci);
+        }
+
+        assertFalse(board.playUciMove("e5d6"));
+        assertNotNull(board.getPiece(3, 3), "black d5 pawn must still be on the board");
+        assertTrue(board.getLegalDestinations(4, 3).stream().noneMatch(square -> square.col == 3 && square.row == 2));
+    }
+
+    @Test
+    void enPassantCannotCaptureOwnPiece() {
+        // Regression: a white knight standing on the double-pushed pawn's square was "captured" en passant.
+        Board board = startedServerBoard();
+        for (String uci : new String[]{"e2e4", "a7a6", "e4e5", "a6a5", "b1c3", "d7d5", "c3d5", "a8a7"}) {
+            assertTrue(board.playUciMove(uci), uci);
+        }
+
+        assertFalse(board.playUciMove("e5d6"));
+        assertTrue(board.getPiece(3, 3) instanceof Knight, "white knight on d5 must survive");
+        assertTrue(board.getPiece(3, 3).isWhite);
+        assertEquals("-", board.getCapturedByBlackText());
+    }
+
+    @Test
+    void enPassantStillAllowedImmediatelyAfterDoublePush() {
+        Board board = startedServerBoard();
+        for (String uci : new String[]{"e2e4", "a7a6", "e4e5", "d7d5"}) {
+            assertTrue(board.playUciMove(uci), uci);
+        }
+
+        assertTrue(board.playUciMove("e5d6"));
+        assertNull(board.getPiece(3, 3));
+        assertTrue(board.getDisplayMovesSnapshot().get(2).startsWith("3. exd6"));
+    }
+
+    @Test
+    void promotionHonoursRequestedPiece() {
+        Board board = startedServerBoard();
+        for (String uci : new String[]{"a2a4", "b7b5", "a4b5", "a7a6", "b5a6", "b8c6", "a6a7", "a8b8"}) {
+            assertTrue(board.playUciMove(uci), uci);
+        }
+
+        assertTrue(board.playMove(0, 1, 0, 0, 'n'));
+
+        assertTrue(board.getPiece(0, 0) instanceof Knight);
+        assertEquals("a7a8n", board.getMoveHistorySnapshot().get(8));
+        assertTrue(board.getDisplayMovesSnapshot().get(4).contains("a8=N"));
+    }
+
+    @Test
+    void uciPromotionLetterIsApplied() {
+        Board board = startedServerBoard();
+        for (String uci : new String[]{"a2a4", "b7b5", "a4b5", "a7a6", "b5a6", "b8c6", "a6a7", "a8b8"}) {
+            assertTrue(board.playUciMove(uci), uci);
+        }
+
+        assertTrue(board.playUciMove("a7b8r"));
+
+        assertTrue(board.getPiece(1, 0) instanceof Rook);
+        assertEquals("a7b8r", board.getMoveHistorySnapshot().get(8));
+        assertFalse(board.playMove(0, 6, 0, 5, 'k'), "invalid promotion letters are rejected");
+    }
+
+    @Test
+    void humanCannotMoveForTheEngine() throws Exception {
+        Board board = startedServerBoard();
+        setPrivateField(board, "engineEnabled", true);
+        setPrivateField(board, "engineIsWhite", false);
+
+        assertTrue(board.playMove(4, 6, 4, 4));  // e2e4 by the human (white)
+        assertTrue(board.isEngineTurn());
+        assertFalse(board.playMove(4, 1, 4, 3), "e7e5 belongs to the engine");
+        assertTrue(board.getLegalDestinations(4, 1).isEmpty());
+        assertEquals(1, board.getMoveHistorySnapshot().size());
+    }
+
+    @Test
+    void movesAreRejectedDuringReviewOrAfterGameEnds() throws Exception {
+        Board board = startedServerBoard();
+        setPrivateField(board, "analysisMode", true);
+        assertFalse(board.playMove(4, 6, 4, 4));
+
+        setPrivateField(board, "analysisMode", false);
+        setPrivateField(board, "isGameActive", false);
+        assertFalse(board.playMove(4, 6, 4, 4));
+        assertTrue(board.getMoveHistorySnapshot().isEmpty());
+    }
+
+    @Test
+    void serverBoardDoesNotStartEngineEagerly() {
+        Board board = new Board(Runnable::run);
+        assertFalse(board.isEngineEnabled());
+        board.dispose();
+    }
+
+    private Board startedServerBoard() {
+        Board board = new Board(Runnable::run);
+        board.startNewGame();
+        return board;
     }
 
     private Board createBoardWithKings(int whiteCol, int whiteRow, int blackCol, int blackRow) {

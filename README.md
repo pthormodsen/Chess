@@ -91,59 +91,84 @@ Or use:
 ./run.sh
 ```
 
-## Server Deployment
+## Deployment
 
-On the Ubuntu server, the project is expected at:
+Deployment is split between GitHub Actions (build) and the server (pull and run). Nothing is built on the server, and GitHub Actions never connects to it.
+
+### CI and images
+
+`.github/workflows/ci.yml` runs on every pull request and every push to `main`:
+
+1. Backend tests (`mvn -B test`).
+2. Frontend production build.
+3. Docker image build. On pushes to `main` the image is pushed to GHCR (authenticated with `GITHUB_TOKEN`) as:
+   - `ghcr.io/pthormodsen/chess:latest`
+   - `ghcr.io/pthormodsen/chess:<short-sha>` (7-character commit SHA, e.g. `8c59db7`)
+
+The image builds the React frontend, packages the Spring Boot app, and installs Stockfish at `/usr/games/stockfish`.
+
+### Server
+
+The project is checked out on `docker01` at:
 
 ```text
-/home/pmt/web/Chess
+/home/pmt/docker/Chess
 ```
 
-Deploy or update:
+The checkout only provides `docker-compose.yml` and the `Makefile`. Compose runs `ghcr.io/pthormodsen/chess:${CHESS_IMAGE_TAG:-latest}`.
+
+If the GHCR package is private, log in once on the server with a personal access token that has `read:packages`:
 
 ```bash
-cd /home/pmt/web/Chess
-./deploy.sh
+echo <token> | docker login ghcr.io -u pthormodsen --password-stdin
 ```
 
-`deploy.sh` runs:
+### Make targets
+
+On a development machine:
 
 ```bash
-git pull --ff-only origin main
-docker compose up -d --build
-docker compose ps
+make dev        # backend on :8081 + Vite with hot reload on http://localhost:3000 (compose.dev.yml)
+make dev-down   # stop the dev containers
+make test       # backend tests
+make build      # build the production image as ghcr.io/pthormodsen/chess:local
 ```
 
-The Docker image builds the React frontend, packages the Spring Boot app, and installs Stockfish inside the container.
+Frontend edits hot reload. Backend changes need `make dev` again, which rebuilds the backend image. To run without Docker, use `./run-web.sh` plus `npm run dev` in `frontend/` (see Local Development).
+
+On the server, from `/home/pmt/docker/Chess`:
+
+```bash
+make deploy             # git pull --ff-only, then make prod, then docker compose ps
+make prod               # docker compose pull && docker compose up -d
+make prod-down          # docker compose down
+make rollback TAG=<sha> # pull and run ghcr.io/pthormodsen/chess:<sha>
+make restart            # restart the running container
+make logs               # follow container logs
+make ps                 # docker compose ps (also: make status)
+```
+
+A rollback lasts until the next `make deploy` or `make prod`, both of which return to `latest`. To find a SHA, use `git log --oneline` or the package page on GitHub.
+
+### Releasing a change
+
+```bash
+git push origin main     # wait for the CI workflow to finish and publish the image
+ssh pmt@docker01
+cd /home/pmt/docker/Chess
+make deploy
+```
 
 ## Docker Compose
 
-The app is bound to localhost only:
-
-```yaml
-ports:
-  - "127.0.0.1:8081:8081"
-```
-
-That means it is not directly exposed to the LAN or internet. Cloudflare Tunnel or another reverse proxy should forward public traffic to:
-
-```text
-http://localhost:8081
-```
-
-Inside Docker, Stockfish is installed at:
-
-```text
-/usr/games/stockfish
-```
+No host port is published. The `chess-web` container joins the external `cloudflare` Docker network, and `cloudflared` reaches it there. The compose file also sets memory, CPU and PID limits, log rotation, and `STOCKFISH_PATH=/usr/games/stockfish`.
 
 ## Cloudflare Tunnel
 
-Your tunnel config should contain an ingress rule like:
+The tunnel's public hostname for `chess.patreek.no` should point to:
 
-```yaml
-- hostname: chess.patreek.no
-  service: http://localhost:8081
+```text
+http://chess-web:8081
 ```
 
 The DNS record in Cloudflare should be:
@@ -156,37 +181,10 @@ Proxy status: Proxied
 TTL: Auto
 ```
 
-After changing the tunnel config:
-
-```bash
-sudo systemctl restart cloudflared
-```
-
 Check the deployed app:
 
 ```bash
-curl -I http://localhost:8081
 curl -I https://chess.patreek.no
-```
-
-## Updating The Server
-
-After local changes are working:
-
-```bash
-cd /Users/patrik/Documents/Prosjekter/Chess
-git status
-git add .
-git commit -m "Update chess web app"
-git push
-```
-
-Then on Ubuntu:
-
-```bash
-ssh pmt@pmt-server
-cd /home/pmt/web/Chess
-./deploy.sh
 ```
 
 ## PGN Review
@@ -208,13 +206,12 @@ This prevents public users from sharing the same active game, but it is not a fu
 
 ## Troubleshooting
 
-If the deployed site does not update:
+If the deployed site does not update, first confirm that the CI run on `main` succeeded and pushed the image. Then:
 
 ```bash
-cd /home/pmt/web/Chess
-git pull --ff-only origin main
-docker compose up -d --build
-docker compose logs -f chess
+cd /home/pmt/docker/Chess
+make deploy
+make logs
 ```
 
 If the browser says DNS cannot resolve:

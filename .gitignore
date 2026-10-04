@@ -35,6 +35,10 @@ build/
 ### VS Code ###
 .vscode/
 
+### Claude Code ###
+CLAUDE*.md
+.claude/
+
 ### Mac OS ###
 .DS_Store
 

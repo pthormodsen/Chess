@@ -1,43 +1,105 @@
 package server.service;
 
 import analysis.GameAnalyzer;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.RemovalCause;
+import com.github.benmanes.caffeine.cache.Scheduler;
+import com.github.benmanes.caffeine.cache.Ticker;
 import com.github.bhlangonijr.chesslib.move.MoveList;
 import main.Board;
 
+import jakarta.annotation.PreDestroy;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.Semaphore;
 import java.util.regex.Pattern;
 
 @Service
 public class WebGameService {
-    private static final String DEFAULT_SESSION = "default";
+    private static final Pattern SESSION_ID = Pattern.compile("[A-Za-z0-9_-]{8,64}");
+    static final int MAX_PGN_CHARS = 100_000;
+    static final int MAX_ANALYSIS_PLIES = 300;
     private static final Pattern TAG_PAIR = Pattern.compile("(?m)^\\s*\\[[^\\n]*]\\s*$");
     private static final Pattern COMMENT = Pattern.compile("\\{[^}]*}|;[^\\n]*");
     private static final Pattern NAG = Pattern.compile("\\$\\d+");
     private static final Pattern MOVE_NUMBER = Pattern.compile("\\b\\d+\\s*\\.(?:\\.\\.)?");
     private static final Pattern RESULT = Pattern.compile("(?<!\\S)(1-0|0-1|1/2-1/2|\\*)(?!\\S)");
 
-    private final Map<String, GameSession> sessions = new ConcurrentHashMap<>();
+    private final Cache<String, GameSession> sessions;
+    // Global caps on Stockfish work: live engine opponents and concurrent game reviews.
+    private final Semaphore engineSlots;
+    private final Semaphore analysisSlots;
 
-    public WebGameService(@Value("${stockfish.path:}") String stockfishPath) {
+    @Autowired
+    public WebGameService(@Value("${stockfish.path:}") String stockfishPath,
+                          @Value("${chess.sessions.max:500}") int maxSessions,
+                          @Value("${chess.sessions.idle-timeout:30m}") Duration idleTimeout,
+                          @Value("${chess.engine.max-sessions:8}") int maxEngineSessions,
+                          @Value("${chess.analysis.max-concurrent:2}") int maxConcurrentAnalyses) {
+        this(stockfishPath, maxSessions, idleTimeout, maxEngineSessions, maxConcurrentAnalyses, Ticker.systemTicker());
+    }
+
+    WebGameService(String stockfishPath, int maxSessions, Duration idleTimeout,
+                   int maxEngineSessions, int maxConcurrentAnalyses, Ticker ticker) {
         System.setProperty("java.awt.headless", "true");
         if(stockfishPath != null && !stockfishPath.isBlank() && System.getProperty("stockfish.path") == null){
             System.setProperty("stockfish.path", stockfishPath);
         }
+        this.engineSlots = new Semaphore(Math.max(0, maxEngineSessions));
+        this.analysisSlots = new Semaphore(Math.max(0, maxConcurrentAnalyses));
+        this.sessions = Caffeine.newBuilder()
+            .maximumSize(Math.max(1, maxSessions))
+            .expireAfterAccess(idleTimeout)
+            .ticker(ticker)
+            .scheduler(Scheduler.systemScheduler())
+            .removalListener((String id, GameSession session, RemovalCause cause) -> {
+                if(session != null){
+                    session.dispose();
+                }
+            })
+            .build();
+    }
+
+    @PreDestroy
+    void shutdown() {
+        sessions.invalidateAll();
+        sessions.cleanUp();
+    }
+
+    long activeSessionCount() {
+        sessions.cleanUp();
+        return sessions.estimatedSize();
+    }
+
+    int availableEngineSlots() {
+        return engineSlots.availablePermits();
+    }
+
+    int availableAnalysisSlots() {
+        return analysisSlots.availablePermits();
+    }
+
+    void cleanUpSessions() {
+        sessions.cleanUp();
     }
 
     public GameState state(String sessionId) {
         return session(sessionId).state();
     }
 
+    /** Resets to the setup phase: a fresh board whose settings can be changed; nothing moves until {@link #startGame}. */
     public GameState startNewGame(String sessionId, NewGameRequest request) {
         return session(sessionId).startNewGame(request);
+    }
+
+    /** Applies the given settings and starts play; Stockfish moves first if it plays White. */
+    public GameState startGame(String sessionId, NewGameRequest request) {
+        return session(sessionId).startGame(request);
     }
 
     public GameState updateSettings(String sessionId, GameSettingsRequest request) {
@@ -56,7 +118,7 @@ public class WebGameService {
         return session(sessionId).pgn();
     }
 
-    public CompletableFuture<GameState> analyze(String sessionId) {
+    public GameState analyze(String sessionId) {
         return session(sessionId).analyze();
     }
 
@@ -73,14 +135,42 @@ public class WebGameService {
     }
 
     private GameSession session(String sessionId) {
-        String key = sessionId == null || sessionId.isBlank() ? DEFAULT_SESSION : sessionId;
-        return sessions.computeIfAbsent(key, ignored -> new GameSession());
+        if(sessionId == null || !SESSION_ID.matcher(sessionId).matches()){
+            throw new InvalidSessionException();
+        }
+        return sessions.get(sessionId, ignored -> new GameSession());
     }
+
+    /** Missing or malformed X-Chess-Session header. */
+    public static final class InvalidSessionException extends RuntimeException {
+        InvalidSessionException() {
+            super("Missing or invalid X-Chess-Session header. Reload the page to start a new session.");
+        }
+    }
+
+    /** The request is valid but not allowed in the game's current state (engine's turn, review mode, ...). */
+    public static final class ConflictException extends RuntimeException {
+        ConflictException(String message) {
+            super(message);
+        }
+    }
+
+    /** A shared capacity limit (engine opponents, analyses) is exhausted. */
+    public static final class CapacityException extends RuntimeException {
+        CapacityException(String message) {
+            super(message);
+        }
+    }
+
+    private static final String SETUP_STATUS_ENGINE = "Choose your settings, then press Start game.";
+    private static final String SETUP_STATUS_LOCAL = "Press Start game or make the first move.";
 
     private final class GameSession {
         private final Board board;
-        private String status = "White to move";
-        private String evaluation = "Material even";
+        // Setup phase: settings are configuration only and the engine is held until the game is explicitly started.
+        private boolean awaitingStart = true;
+        private volatile String status = "White to move";
+        private volatile String evaluation = "Material even";
         private String analysisStatus = "idle";
         private List<String> analysisReport = List.of("Press Analyze to run a Stockfish-powered review.");
         private AnalysisFrameView analysisFrame;
@@ -89,9 +179,23 @@ public class WebGameService {
         private boolean enginePlaysWhite = false;
         private int engineElo = 1200;
         private int timeMinutes = 10;
+        private boolean holdsEngineSlot;
+        // True while a Board analysis task is queued or running; that task owns one analysis slot.
+        private boolean holdsAnalysisSlot;
+        // Bumped by resetAnalysis so results of an abandoned analysis are not shown.
+        private long analysisGeneration;
+        private boolean disposed;
 
         GameSession() {
-            board = new Board();
+            // Engine moves and analysis results are applied under this session's lock, never on the Swing EDT.
+            board = new Board(task -> {
+                synchronized (this) {
+                    if(!disposed){
+                        task.run();
+                    }
+                }
+            });
+            board.setEngineOnHold(true);
             board.setTimeControlMinutes(timeMinutes);
             board.setHumanVsHuman(humanVsHuman);
             board.setEngineElo(engineElo);
@@ -103,18 +207,77 @@ public class WebGameService {
                 analysisFrame = AnalysisFrameView.from(frame);
                 analysisSummary = frame == null ? null : frame.summary;
             });
+            enterSetup();
+        }
+
+        /** Fresh starting position with the current settings; clocks reset, no engine move. */
+        private void enterSetup() {
+            awaitingStart = true;
+            board.setEngineOnHold(true);
             board.startNewGame();
+            status = humanVsHuman ? SETUP_STATUS_LOCAL : SETUP_STATUS_ENGINE;
+        }
+
+        synchronized void dispose() {
+            if(disposed){
+                return;
+            }
+            disposed = true;
+            board.dispose();
+            releaseEngineSlot();
+            releaseAnalysisSlot();
+        }
+
+        private void ensureOpen() {
+            if(disposed){
+                throw new ConflictException("This game session expired. Reload the page to start a new one.");
+            }
+        }
+
+        private void releaseEngineSlot() {
+            if(holdsEngineSlot){
+                holdsEngineSlot = false;
+                engineSlots.release();
+            }
+        }
+
+        private void releaseAnalysisSlot() {
+            if(holdsAnalysisSlot){
+                holdsAnalysisSlot = false;
+                analysisSlots.release();
+            }
         }
 
         synchronized GameState startNewGame(NewGameRequest request) {
+            ensureOpen();
+            // Hold first so neither the settings nor the reset can trigger an engine move.
+            board.setEngineOnHold(true);
+            awaitingStart = true;
+            applySettings(request);
+            resetAnalysis("Press Analyze to run a Stockfish-powered review.");
+            enterSetup();
+            return state();
+        }
+
+        synchronized GameState startGame(NewGameRequest request) {
+            ensureOpen();
+            if(!awaitingStart){
+                throw new ConflictException("A game is already in progress. Press New game first.");
+            }
             applySettings(request);
             resetAnalysis("Press Analyze to run a Stockfish-powered review.");
             board.startNewGame();
+            awaitingStart = false;
+            board.setEngineOnHold(false); // Stockfish plays White's first move now, if it is White
             return state();
         }
 
         synchronized GameState updateSettings(SettingsRequest request) {
+            ensureOpen();
             applySettings(request);
+            if(awaitingStart){
+                enterSetup(); // reflect the new time control / side on the idle board
+            }
             return state();
         }
 
@@ -122,17 +285,35 @@ public class WebGameService {
             if(request == null){
                 return;
             }
+            if(!awaitingStart){
+                boolean opponentChange = request.humanVsHuman() != null && request.humanVsHuman() != humanVsHuman;
+                boolean sideChange = request.enginePlaysWhite() != null && request.enginePlaysWhite() != enginePlaysWhite;
+                if(opponentChange || sideChange){
+                    throw new ConflictException("Start a new game to change the opponent or side.");
+                }
+            }
+            boolean wantsEngine = Boolean.FALSE.equals(request.humanVsHuman());
+            if(wantsEngine && !holdsEngineSlot){
+                if(!engineSlots.tryAcquire()){
+                    throw new CapacityException("All Stockfish opponents are busy right now. Try again in a few minutes.");
+                }
+                holdsEngineSlot = true;
+            }
             if(request.minutes() != null){
                 timeMinutes = clamp(request.minutes(), 1, 60);
                 board.setTimeControlMinutes(timeMinutes);
             }
-            if(request.humanVsHuman() != null){
-                humanVsHuman = request.humanVsHuman();
-                board.setHumanVsHuman(humanVsHuman);
-            }
+            // Side first, so enabling the engine mid-game immediately plays for the correct colour.
             if(request.enginePlaysWhite() != null){
                 enginePlaysWhite = request.enginePlaysWhite();
                 board.setEnginePlaysWhite(enginePlaysWhite);
+            }
+            if(request.humanVsHuman() != null){
+                humanVsHuman = request.humanVsHuman();
+                board.setHumanVsHuman(humanVsHuman);
+                if(humanVsHuman){
+                    releaseEngineSlot();
+                }
             }
             if(request.engineElo() != null){
                 engineElo = clamp(request.engineElo(), 800, 2800);
@@ -141,6 +322,7 @@ public class WebGameService {
         }
 
         synchronized GameState state() {
+            ensureOpen();
             return new GameState(
                 board.getPieceViews(),
                 board.isWhiteToMove() ? "white" : "black",
@@ -161,6 +343,9 @@ public class WebGameService {
                 enginePlaysWhite,
                 engineElo,
                 timeMinutes,
+                awaitingStart,
+                board.isEngineEnabled(),
+                board.isEngineTurn(),
                 board.isAnalysisMode(),
                 analysisStatus,
                 analysisReport,
@@ -171,42 +356,83 @@ public class WebGameService {
         }
 
         synchronized MoveResponse move(MoveRequest request) {
-            boolean legal = board.playMove(request.fromCol(), request.fromRow(), request.toCol(), request.toRow());
+            ensureOpen();
+            if(request == null){
+                throw new IllegalArgumentException("Move is required.");
+            }
+            if(board.isAnalysisMode()){
+                throw new ConflictException("Exit the game review before making a move.");
+            }
+            if(awaitingStart && !humanVsHuman){
+                throw new ConflictException("Press Start game to begin playing Stockfish.");
+            }
+            if(board.isEngineTurn()){
+                throw new ConflictException("Wait for Stockfish to make its move.");
+            }
+            char promotion = parsePromotion(request.promotion());
+            boolean legal = board.playMove(request.fromCol(), request.fromRow(), request.toCol(), request.toRow(), promotion);
+            if(legal && awaitingStart){
+                // Local two-player games may start with the first move; there is no engine to race.
+                awaitingStart = false;
+                board.setEngineOnHold(false);
+            }
             return new MoveResponse(legal, legal ? null : "Illegal move", state());
         }
 
         synchronized List<Board.SquareView> legalMoves(int col, int row) {
+            ensureOpen();
+            if(awaitingStart && !humanVsHuman){
+                return List.of();
+            }
             return board.getLegalDestinations(col, row);
         }
 
-        String pgn() {
-            synchronized (this) {
-                return board.getPgn(board.getLastResultTag());
-            }
+        synchronized String pgn() {
+            ensureOpen();
+            return board.getPgn(board.getLastResultTag());
         }
 
-        CompletableFuture<GameState> analyze() {
-            CompletableFuture<GameState> future = new CompletableFuture<>();
-            synchronized (this) {
-                analysisStatus = "running";
-                analysisReport = List.of("Analyzing game...");
-                analysisSummary = null;
-                analysisFrame = null;
-            }
-            board.analyzeGame(lines -> {
-                synchronized (this) {
-                    analysisReport = lines;
-                    analysisStatus = "ready";
-                    future.complete(state());
+        /** Starts a background review and returns immediately; clients poll {@code analysisStatus}. */
+        synchronized GameState analyze() {
+            ensureOpen();
+            if(holdsAnalysisSlot){
+                if("running".equals(analysisStatus)){
+                    return state();
                 }
+                throw new ConflictException("The previous analysis is still finishing. Try again in a moment.");
+            }
+            if(board.getMoveHistorySnapshot().size() > MAX_ANALYSIS_PLIES){
+                throw new IllegalArgumentException("Games longer than " + MAX_ANALYSIS_PLIES + " ply cannot be analyzed.");
+            }
+            if(!analysisSlots.tryAcquire()){
+                throw new CapacityException("The server is busy analyzing other games. Try again in a minute.");
+            }
+            holdsAnalysisSlot = true;
+            final long generation = ++analysisGeneration;
+            analysisStatus = "running";
+            analysisReport = List.of("Analyzing game...");
+            analysisSummary = null;
+            analysisFrame = null;
+            board.analyzeGame(lines -> {
+                // Runs under this session's lock (callback executor) or synchronously from this method.
+                releaseAnalysisSlot();
+                if(generation != analysisGeneration){
+                    return;
+                }
+                analysisReport = lines;
+                analysisStatus = board.isAnalysisMode() ? "ready" : "failed";
             });
-            return future.orTimeout(90, TimeUnit.SECONDS);
+            return state();
         }
 
         synchronized GameState importPgn(PgnImportRequest request) {
+            ensureOpen();
             String pgn = request == null ? "" : request.pgn();
             if(pgn == null || pgn.isBlank()){
                 throw new IllegalArgumentException("Paste PGN text or upload a .pgn file first.");
+            }
+            if(pgn.length() > MAX_PGN_CHARS){
+                throw new IllegalArgumentException("PGN is too large (max " + MAX_PGN_CHARS / 1000 + " KB).");
             }
 
             List<String> moves = parsePgnToUci(pgn);
@@ -226,22 +452,28 @@ public class WebGameService {
             }
             humanVsHuman = true;
             board.setHumanVsHuman(true);
+            releaseEngineSlot();
+            awaitingStart = false;
+            board.setEngineOnHold(false);
             status = board.isGameOver() ? status : "Imported PGN. Ready to analyze.";
             return state();
         }
 
         synchronized GameState stepAnalysis(int delta) {
+            ensureOpen();
             board.stepAnalysis(delta);
             return state();
         }
 
         synchronized GameState exitAnalysis() {
+            ensureOpen();
             board.exitAnalysisReview();
             resetAnalysis("Press Analyze to run a Stockfish-powered review.");
             return state();
         }
 
         private void resetAnalysis(String message) {
+            analysisGeneration++;
             analysisStatus = "idle";
             analysisReport = List.of(message);
             analysisSummary = null;
@@ -288,6 +520,17 @@ public class WebGameService {
         return result.toString();
     }
 
+    private static char parsePromotion(String promotion) {
+        if(promotion == null || promotion.isBlank()){
+            return 'q';
+        }
+        String normalized = promotion.trim().toLowerCase();
+        if(normalized.length() != 1 || "qrbn".indexOf(normalized.charAt(0)) < 0){
+            throw new IllegalArgumentException("Promotion must be one of q, r, b or n.");
+        }
+        return normalized.charAt(0);
+    }
+
     private static int clamp(int value, int min, int max) {
         return Math.max(min, Math.min(max, value));
     }
@@ -313,7 +556,11 @@ public class WebGameService {
         Integer engineElo
     ) implements SettingsRequest {}
 
-    public record MoveRequest(int fromCol, int fromRow, int toCol, int toRow) {}
+    public record MoveRequest(int fromCol, int fromRow, int toCol, int toRow, String promotion) {
+        public MoveRequest(int fromCol, int fromRow, int toCol, int toRow) {
+            this(fromCol, fromRow, toCol, toRow, null);
+        }
+    }
 
     public record MoveResponse(boolean legal, String error, GameState state) {}
 
@@ -341,6 +588,9 @@ public class WebGameService {
         boolean enginePlaysWhite,
         int engineElo,
         int timeMinutes,
+        boolean awaitingStart,
+        boolean engineEnabled,
+        boolean engineTurn,
         boolean analysisMode,
         String analysisStatus,
         List<String> analysisReport,
@@ -421,10 +671,15 @@ public class WebGameService {
         List<String> bestLine,
         double evalBefore,
         double evalAfter,
+        Integer mateBefore,
+        Integer mateAfter,
         double loss,
         String severity,
         Integer moveNumber,
-        Boolean whiteMove
+        Boolean whiteMove,
+        boolean deliveredMate,
+        String gameEndReason,
+        String gameEndMessage
     ) {
         static AnalysisFrameView from(Board.AnalysisFrame frame) {
             if(frame == null){
@@ -441,10 +696,15 @@ public class WebGameService {
                 entry == null ? List.of() : entry.bestLine,
                 entry == null ? 0 : entry.evalBefore,
                 entry == null ? 0 : entry.evalAfter,
+                entry == null ? null : entry.mateBefore,
+                entry == null ? null : entry.mateAfter,
                 entry == null ? 0 : entry.loss,
                 entry == null ? null : entry.severity,
                 frame.hasMove() ? frame.moveNumber() : null,
-                frame.hasMove() ? frame.isWhiteMove() : null
+                frame.hasMove() ? frame.isWhiteMove() : null,
+                frame.deliveredMate,
+                frame.gameEndReason == null ? null : frame.gameEndReason.code,
+                frame.gameEndMessage
             );
         }
     }

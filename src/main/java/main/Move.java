@@ -11,6 +11,8 @@ public class Move {
 
     Piece piece;
     Piece capture;
+    /** UCI promotion letter (q, r, b, n) used when this move promotes a pawn. */
+    public char promotion = 'q';
     public boolean isPromotion;
     public boolean isCastle;
 

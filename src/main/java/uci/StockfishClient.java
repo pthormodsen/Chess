@@ -48,7 +48,12 @@ public class StockfishClient implements Closeable {
         writer = new BufferedWriter(new OutputStreamWriter(process.getOutputStream()));
         reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
 
-        initialize();
+        try {
+            initialize();
+        } catch (IOException | RuntimeException e) {
+            process.destroyForcibly();
+            throw e;
+        }
     }
 
     private void initialize() throws IOException {
@@ -169,6 +174,9 @@ public class StockfishClient implements Closeable {
     }
 
     private void sendCommand(String command) throws IOException {
+        if (command.indexOf('\n') >= 0 || command.indexOf('\r') >= 0) {
+            throw new IllegalArgumentException("UCI command must be a single line");
+        }
         writer.write(command);
         writer.newLine();
         writer.flush();
@@ -179,9 +187,20 @@ public class StockfishClient implements Closeable {
         try {
             sendCommand("quit");
         } finally {
-            reader.close();
-            writer.close();
-            process.destroy();
+            try {
+                reader.close();
+                writer.close();
+            } finally {
+                process.destroy();
+                try {
+                    if (!process.waitFor(1, java.util.concurrent.TimeUnit.SECONDS)) {
+                        process.destroyForcibly();
+                    }
+                } catch (InterruptedException e) {
+                    process.destroyForcibly();
+                    Thread.currentThread().interrupt();
+                }
+            }
         }
     }
 }

@@ -19,12 +19,23 @@ public class Piece {
 
     public boolean isFirstMove = true;
 
+    // Headless (server) boards never paint, so every piece shares one blank sheet instead of allocating its own.
+    private static final int HEADLESS_SHEET_SCALE = 100;
+    private static BufferedImage headlessSheet;
+
+    private static synchronized BufferedImage headlessSheet(){
+        if(headlessSheet == null){
+            headlessSheet = new BufferedImage(HEADLESS_SHEET_SCALE * 6, HEADLESS_SHEET_SCALE * 2, BufferedImage.TYPE_INT_ARGB);
+        }
+        return headlessSheet;
+    }
+
     BufferedImage sheet;
     protected int sheetScale;
     {
         if(GraphicsEnvironment.isHeadless()){
-            sheetScale = 100;
-            sheet = new BufferedImage(sheetScale * 6, sheetScale * 2, BufferedImage.TYPE_INT_ARGB);
+            sheetScale = HEADLESS_SHEET_SCALE;
+            sheet = headlessSheet();
         } else {
             try (InputStream spriteStream = Piece.class.getClassLoader().getResourceAsStream("pieces.png")) {
                 if(spriteStream == null){

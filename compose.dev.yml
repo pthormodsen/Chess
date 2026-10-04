@@ -1,0 +1,34 @@
+# Local development: Spring Boot + Stockfish on :8081, Vite with hot reload on :3000.
+# Open http://localhost:3000. Frontend edits reload instantly; backend changes need `make dev` again (rebuilds).
+services:
+  backend:
+    build: .
+    image: ghcr.io/pthormodsen/chess:dev
+    container_name: chess-dev-backend
+    environment:
+      STOCKFISH_PATH: /usr/games/stockfish
+      SERVER_PORT: 8081
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=50 -XX:+ExitOnOutOfMemoryError"
+    ports:
+      - "127.0.0.1:8081:8081"
+
+  frontend:
+    image: node:20
+    container_name: chess-dev-frontend
+    working_dir: /app
+    command: sh -c "npm ci --prefer-offline --no-audit --no-fund && npm run dev -- --host 0.0.0.0"
+    environment:
+      VITE_API_TARGET: http://backend:8081
+    volumes:
+      - ./frontend:/app
+      # Linux node_modules live in a volume so they never mix with the host's (macOS) install.
+      - frontend-node-modules:/app/node_modules
+      - npm-cache:/root/.npm
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  frontend-node-modules:
+  npm-cache:

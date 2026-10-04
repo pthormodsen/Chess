@@ -21,10 +21,25 @@ public class GameAnalyzer {
         public final double loss;
         public final String severity;
         public final String qualityTag;
+        /**
+         * Stockfish "mate in N" for the position before/after this move, signed from White's perspective
+         * (+N: White mates in N, -N: Black mates in N); null when the engine reported a centipawn score.
+         * This is evaluation information only: whether a move actually checkmated is decided by the board.
+         */
+        public final Integer mateBefore;
+        public final Integer mateAfter;
 
         public Entry(int plyIndex, boolean isWhite, String playedMove, String bestMove,
                      List<String> bestLine, double evalBefore, double evalAfter,
                      double loss, String severity, String qualityTag) {
+            this(plyIndex, isWhite, playedMove, bestMove, bestLine, evalBefore, evalAfter, loss, severity, qualityTag, null, null);
+        }
+
+        public Entry(int plyIndex, boolean isWhite, String playedMove, String bestMove,
+                     List<String> bestLine, double evalBefore, double evalAfter,
+                     double loss, String severity, String qualityTag, Integer mateBefore, Integer mateAfter) {
+            this.mateBefore = mateBefore;
+            this.mateAfter = mateAfter;
             this.plyIndex = plyIndex;
             this.isWhite = isWhite;
             this.playedMove = playedMove;
@@ -56,6 +71,9 @@ public class GameAnalyzer {
             List<String> history = new ArrayList<>();
 
             for (int i = 0; i < moves.size(); i++) {
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new java.io.InterruptedIOException("Analysis cancelled");
+                }
                 String move = moves.get(i);
                 boolean whiteMove = (i % 2 == 0);
 
@@ -75,14 +93,12 @@ public class GameAnalyzer {
                 double winLoss = winPercentLoss(whiteMove, evalBefore, evalAfter);
                 double winGain = Math.max(0, -winLoss);
 
+                // A mate score is evaluation, not a result: it must not turn the played move into "mate".
                 String severity = classifyWinLoss(winLoss);
-                if (before.mate != null) {
-                    severity = "Mate in " + before.mate;
-                }
+                String tag = determineQualityTag(playedBest, winLoss, winGain);
 
-                String tag = determineQualityTag(playedBest, winLoss, winGain, severity);
-
-                result.add(new Entry(i, whiteMove, move, bestMove, pv, evalBefore, evalAfter, loss, severity, tag));
+                result.add(new Entry(i, whiteMove, move, bestMove, pv, evalBefore, evalAfter, loss, severity, tag,
+                    toWhitePerspectiveMate(before, whiteMove), toWhitePerspectiveMate(after, !whiteMove)));
 
                 before = after;
             }
@@ -304,6 +320,14 @@ public class GameAnalyzer {
         return whiteToMove ? sideToMoveScore : -sideToMoveScore;
     }
 
+    /** Engine mate-in-N signed from White's perspective; null for centipawn scores and for "mate 0" (already mated). */
+    static Integer toWhitePerspectiveMate(StockfishClient.AnalysisResult result, boolean whiteToMove) {
+        if (result == null || result.mate == null || result.mate == 0) {
+            return null;
+        }
+        return whiteToMove ? result.mate : -result.mate;
+    }
+
     private String classifyWinLoss(double winLoss) {
         if (winLoss >= 20) return "Blunder";
         if (winLoss >= 10) return "Mistake";
@@ -311,10 +335,7 @@ public class GameAnalyzer {
         return "Good";
     }
 
-    private String determineQualityTag(boolean playedBest, double winLoss, double winGain, String severity) {
-        if (severity != null && severity.startsWith("Mate")) {
-            return "Mate";
-        }
+    static String determineQualityTag(boolean playedBest, double winLoss, double winGain) {
         if (playedBest && winGain >= 10) {
             return "Brilliant";
         }

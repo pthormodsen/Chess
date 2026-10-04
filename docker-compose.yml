@@ -1,11 +1,24 @@
 services:
   chess:
-    build: .
+    # Built and pushed by GitHub Actions on main; the server only pulls. Override the tag to roll back.
+    image: ghcr.io/pthormodsen/chess:${CHESS_IMAGE_TAG:-latest}
     container_name: chess-web
     restart: unless-stopped
     environment:
       STOCKFISH_PATH: /usr/games/stockfish
       SERVER_PORT: 8081
+      # Heap is capped well below mem_limit so Stockfish processes (native memory) still fit.
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=50 -XX:+ExitOnOutOfMemoryError"
+    # Hard ceilings so a burst of sessions/engine work cannot take down the host.
+    mem_limit: 2g
+    memswap_limit: 2g
+    cpus: "2.0"
+    pids_limit: 512
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - cloudflare
 
