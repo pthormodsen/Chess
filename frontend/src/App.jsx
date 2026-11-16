@@ -1,22 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import axios from 'axios'
 import { PieceIcon, pieceFromSymbol } from './pieces.jsx'
+import {
+  AnalysisProgress, ClassIcon, CoachCard, EvalBar, EvalGraph, ReviewMoveList, ReviewNav, ReviewSummary,
+  classMeta, evalAtPly, findKeyMoment, piecesFromFen, uciSquares
+} from './review.jsx'
 
 const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
-
-const qualityMeta = {
-  Brilliant: { label: 'brilliant', icon: '!!', tone: 'brilliant' },
-  Great: { label: 'great', icon: '!', tone: 'great' },
-  Best: { label: 'best', icon: '★', tone: 'best' },
-  Excellent: { label: 'excellent', icon: '✓', tone: 'excellent' },
-  Good: { label: 'good', icon: '•', tone: 'good' },
-  Inaccuracy: { label: 'an inaccuracy', icon: '?!', tone: 'inaccuracy' },
-  Mistake: { label: 'a mistake', icon: '?', tone: 'mistake' },
-  'Severe Mistake': { label: 'a severe mistake', icon: '??', tone: 'mistake' },
-  Blunder: { label: 'a blunder', icon: '??', tone: 'blunder' },
-  // Only used when the board says the move actually delivered checkmate (frame.deliveredMate).
-  Mate: { label: 'checkmate', icon: '#', tone: 'mate' }
-}
 
 function squareName(col, row) {
   return `${files[col]}${8 - row}`
@@ -42,45 +32,8 @@ function formatApiError(err) {
   return err.message
 }
 
-function uciToMove(uci) {
-  if (!uci || uci.length < 4) return null
-  const fromCol = files.indexOf(uci[0])
-  const toCol = files.indexOf(uci[2])
-  const fromRow = 8 - Number(uci[1])
-  const toRow = 8 - Number(uci[3])
-  if ([fromCol, fromRow, toCol, toRow].some(value => !Number.isInteger(value) || value < 0 || value > 7)) {
-    return null
-  }
-  return { fromCol, fromRow, toCol, toRow }
-}
-
 function sameMove(a, b) {
   return a && b && a.fromCol === b.fromCol && a.fromRow === b.fromRow && a.toCol === b.toCol && a.toRow === b.toRow
-}
-
-function getQualityMeta(tag) {
-  // Engine mate scores are evaluation, never a classification: a stray "Mate" tag falls back to a neutral label.
-  if (tag === 'Mate') return { label: 'a strong move', icon: '•', tone: 'good' }
-  return qualityMeta[tag] ?? { label: tag ?? 'move', icon: '•', tone: 'good' }
-}
-
-// Review classification for a frame: "checkmate" only when the board confirms the move mated.
-function frameQualityMeta(frame) {
-  return frame?.deliveredMate ? qualityMeta.Mate : getQualityMeta(frame?.qualityTag)
-}
-
-// Evaluation text. `mate` is Stockfish's mate-in-N (White-positive) and is shown as such; a large
-// centipawn score is always shown as a number, never as mate.
-function scoreText(value, mate) {
-  if (mate != null) return `${mate > 0 ? 'White' : 'Black'} mates in ${Math.abs(mate)}`
-  if (value === 0) return '0.00'
-  return `${value > 0 ? '+' : ''}${value.toFixed(2)}`
-}
-
-function scoreBadge(frame) {
-  if (frame.deliveredMate) return '#'
-  if (frame.mateAfter != null) return `${frame.mateAfter > 0 ? '+' : '-'}M${Math.abs(frame.mateAfter)}`
-  return scoreText(frame.evalAfter)
 }
 
 const SESSION_KEY = 'chess.sessionId'
@@ -143,6 +96,10 @@ export default function App() {
   // null = automatic (open until the first move); true/false once the player toggles it.
   const [settingsOpen, setSettingsOpen] = useState(null)
   const [confirmHome, setConfirmHome] = useState(false)
+  // Review: the summary screen comes first; "moves" is the move-by-move review.
+  const [reviewStage, setReviewStage] = useState('summary')
+  // Best line being played on the board: { plyIndex, index } (index into the frame's bestLinePlies).
+  const [linePreview, setLinePreview] = useState(null)
 
   const boardRef = useRef(null)
   const dragRef = useRef(null)
@@ -150,6 +107,9 @@ export default function App() {
   const legalRequestRef = useRef(0)
   // latest: id of the newest mutation; epoch: bumped when any mutation starts or ends, so polls that overlap one are dropped.
   const mutationRef = useRef({ latest: 0, epoch: 0, inFlight: 0 })
+  // Last requested review ply while navigation is in flight, so fast key repeats keep moving instead of re-sending one ply.
+  const navRef = useRef({ target: null, inFlight: 0 })
+  const wasReviewRef = useRef(false)
 
   useEffect(() => {
     axios.defaults.headers.common['X-Chess-Session'] = getSessionId()
@@ -168,18 +128,24 @@ export default function App() {
     }
   }, [])
 
+  const reviewFrame = game?.analysisMode ? game?.analysisFrame : null
+  const reviewEntries = game?.analysisEntries ?? []
+  const previewPlies = linePreview && reviewFrame?.plyIndex === linePreview.plyIndex ? reviewFrame.bestLinePlies ?? [] : []
+  const previewPly = previewPlies[linePreview?.index ?? -1] ?? null
+  const boardPieces = previewPly ? piecesFromFen(previewPly.fen) : game?.pieces
+
   const piecesBySquare = useMemo(() => {
     const map = new Map()
-    for (const piece of game?.pieces ?? []) {
+    for (const piece of boardPieces ?? []) {
       map.set(`${piece.col},${piece.row}`, piece)
     }
     return map
-  }, [game])
+  }, [boardPieces])
 
   const balance = materialBalance(game?.pieces)
   const whiteCaptures = splitCaptures(game?.capturedByWhite)
   const blackCaptures = splitCaptures(game?.capturedByBlack)
-  const lastMove = game?.lastMove
+  const lastMove = previewPly ? uciSquares(previewPly.uci) : game?.lastMove
   const disconnected = connectionError && !game
   const engineTurn = Boolean(game?.engineTurn)
   const engineUnavailable = Boolean(game && !game.humanVsHuman && !game.engineEnabled && game.active && !game.analysisMode)
@@ -188,11 +154,13 @@ export default function App() {
   const [flipped, setFlipped] = useState(false)
   const analysisRunning = analyzing || game?.analysisStatus === 'running'
   const legalMoves = selected && sameSquare(legalFor.origin, selected) ? legalFor.moves : []
-  const reviewFrame = game?.analysisMode ? game?.analysisFrame : null
-  const reviewPlayedMove = reviewFrame?.plyIndex >= 0 ? uciToMove(reviewFrame.playedMove) : null
-  const reviewBestMove = reviewFrame?.plyIndex >= 0 ? uciToMove(reviewFrame.bestMove) : null
-  const reviewMeta = frameQualityMeta(reviewFrame)
+  const reviewPly = reviewFrame?.plyIndex ?? -1
+  const reviewPlayedMove = reviewPly >= 0 && !previewPly ? uciSquares(reviewFrame.playedMove) : null
+  const reviewBestMove = reviewPly >= 0 && !previewPly ? uciSquares(reviewFrame.bestMove) : null
+  const reviewMeta = reviewFrame?.deliveredMate ? classMeta('Best') : classMeta(reviewFrame?.qualityTag)
   const showBestArrow = reviewBestMove && !sameMove(reviewBestMove, reviewPlayedMove)
+  const nextPreviewPly = previewPlies[(linePreview?.index ?? -1) + 1] ?? null
+  const reviewMovesStage = Boolean(game?.analysisMode) && reviewStage === 'moves'
   const plyCount = game?.uciMoves?.length ?? 0
 
   // Turn the board only after a move has fully landed: never mid-drag, never with the promotion picker open,
@@ -217,26 +185,60 @@ export default function App() {
     setPromotion(null)
   }, [plyCount, game?.analysisMode, game?.active])
 
+  // Entering review always opens the summary; leaving it clears any line preview.
+  useEffect(() => {
+    const inReviewNow = Boolean(game?.analysisMode)
+    if (inReviewNow && !wasReviewRef.current) setReviewStage('summary')
+    if (!inReviewNow) setLinePreview(null)
+    wasReviewRef.current = inReviewNow
+  }, [game?.analysisMode])
+
+  useEffect(() => {
+    setLinePreview(null)
+    // Once the server state has caught up with every request, key presses start from the shown ply again.
+    if (navRef.current.inFlight === 0) navRef.current.target = null
+  }, [reviewPly])
+
   useEffect(() => {
     function handleReviewKeys(event) {
       const target = event.target
       const tagName = target?.tagName?.toLowerCase()
       const isTyping = tagName === 'input' || tagName === 'select' || tagName === 'textarea' || target?.isContentEditable
-      if (!game?.analysisMode || analysisRunning || pending || isTyping || confirmHome) return
+      if (!game?.analysisMode || pending || isTyping || confirmHome || event.altKey || event.metaKey || event.ctrlKey) return
 
-      if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
-        event.preventDefault()
-        stepAnalysis(-1)
+      // While a best line is on the board, the arrows walk through that line instead.
+      if (linePreview && previewPlies.length) {
+        const keys = { ArrowLeft: -1, ArrowRight: 1 }
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          setLinePreview(null)
+        } else if (event.key in keys) {
+          event.preventDefault()
+          const next = linePreview.index + keys[event.key]
+          if (next < 0) setLinePreview(null)
+          else setLinePreview({ ...linePreview, index: Math.min(previewPlies.length - 1, next) })
+        }
+        return
       }
-      if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
-        event.preventDefault()
-        stepAnalysis(1)
-      }
+
+      const total = game.analysisFrame?.totalPlies ?? 0
+      const current = navRef.current.target ?? reviewPly
+      let destination = null
+      if (event.key === 'ArrowLeft') destination = current - 1
+      else if (event.key === 'ArrowRight') destination = current + 1
+      else if (event.key === 'Home') destination = -1
+      else if (event.key === 'End') destination = total - 1
+      else if (event.key === 'ArrowDown') destination = findKeyMoment(reviewEntries, current, 1)
+      else if (event.key === 'ArrowUp') destination = findKeyMoment(reviewEntries, current, -1)
+      else return
+      event.preventDefault()
+      if (destination == null) return
+      gotoPly(Math.max(-1, Math.min(total - 1, destination)))
     }
 
     window.addEventListener('keydown', handleReviewKeys)
     return () => window.removeEventListener('keydown', handleReviewKeys)
-  }, [game?.analysisMode, game?.analysisFrame?.plyIndex, analysisRunning, pending, confirmHome])
+  }, [game?.analysisMode, reviewPly, reviewEntries, linePreview, previewPlies, pending, confirmHome, reviewStage])
 
   async function refreshGame() {
     const tracker = mutationRef.current
@@ -586,15 +588,28 @@ export default function App() {
     }
   }
 
-  async function stepAnalysis(direction) {
+  // Jumps the review to a ply (-1 = start). Any navigation also moves from the summary into the review.
+  async function gotoPly(ply) {
+    if (ply == null) return
+    setReviewStage('moves')
+    const nav = navRef.current
+    nav.target = ply
+    nav.inFlight += 1
     try {
-      const endpoint = direction < 0 ? '/api/game/analysis/previous' : '/api/game/analysis/next'
-      const { response, current } = await mutate(() => axios.post(endpoint))
+      const { response, current } = await mutate(() => axios.post('/api/game/analysis/goto', { ply }))
       if (current) applyGameState(response.data)
       setError(null)
     } catch (err) {
+      nav.target = null
       setError(formatApiError(err))
+    } finally {
+      nav.inFlight -= 1
     }
+  }
+
+  function playLine(index) {
+    if (!reviewFrame?.bestLinePlies?.length) return
+    setLinePreview({ plyIndex: reviewFrame.plyIndex, index })
   }
 
   async function exitAnalysis() {
@@ -626,9 +641,11 @@ export default function App() {
       advantage={side === 'white' ? balance : -balance}
     />
   )
-  const reviewHeadline = reviewFrame?.plyIndex >= 0
-    ? `${reviewFrame.moveNumber}${reviewFrame.whiteMove ? '.' : '...'} ${reviewFrame.san}${reviewFrame.gameEndMessage ? ` · ${reviewFrame.gameEndMessage}` : ''}`
-    : 'Starting position'
+  const reviewHeadline = reviewStage === 'summary'
+    ? 'Game review'
+    : reviewFrame?.plyIndex >= 0
+      ? `${reviewFrame.moveNumber}${reviewFrame.whiteMove ? '.' : '...'} ${reviewFrame.san}${reviewFrame.gameEndMessage ? ` · ${reviewFrame.gameEndMessage}` : ''}`
+      : 'Starting position'
   const headline = disconnected
     ? 'Game server unavailable'
     : game?.analysisMode
@@ -648,9 +665,9 @@ export default function App() {
     `${timeControl} min`,
     humanVsHuman ? '2 players' : `vs Stockfish · ${playAs === 'white' ? 'White' : 'Black'} · ${engineElo}`
   ].join(' · ')
-  const analysisNotice = !inReview && (game?.analysisStatus === 'running' || game?.analysisStatus === 'failed')
-    ? (game.analysisReport ?? [])[0]
-    : null
+  const analysisNotice = !inReview && game?.analysisStatus === 'failed' ? (game.analysisReport ?? [])[0] : null
+  const showProgress = !inReview && game?.analysisStatus === 'running'
+  const reviewEval = evalAtPly(reviewEntries, reviewPly)
 
   return (
     <main className="app-shell">
@@ -667,10 +684,24 @@ export default function App() {
         <div className="play-area">
           {sideBar(topSide)}
 
+          {inReview && reviewEval && (
+            <EvalBar
+              evaluation={reviewFrame?.deliveredMate
+                ? { ...reviewEval, win: reviewFrame.whiteMove ? 100 : 0, result: reviewFrame.whiteMove ? '1-0' : '0-1' }
+                : reviewEval}
+              flipped={flipped}
+            />
+          )}
           <div className="board-frame">
+            {previewPly && (
+              <div className="line-banner" role="status">
+                <span>Best line · {linePreview.index + 1}/{previewPlies.length}</span>
+                <button type="button" onClick={() => setLinePreview(null)}>Back to game ✕</button>
+              </div>
+            )}
             <div className="board" ref={boardRef} role="grid" aria-label="Chess board">
-              {reviewPlayedMove && <BoardArrow move={reviewPlayedMove} flipped={flipped} tone={reviewMeta.tone} label="Played move" />}
               {showBestArrow && <BoardArrow move={reviewBestMove} flipped={flipped} tone="best-suggestion" label="Best move" />}
+              {nextPreviewPly && <BoardArrow move={uciSquares(nextPreviewPly.uci)} flipped={flipped} tone="best-suggestion" label="Next move in line" />}
 
               {boardIndexes.map(displayRow => boardIndexes.map(displayCol => {
                 const row = flipped ? 7 - displayRow : displayRow
@@ -684,7 +715,8 @@ export default function App() {
                   (lastMove.fromCol === col && lastMove.fromRow === row) ||
                   (lastMove.toCol === col && lastMove.toRow === row)
                 )
-                const reviewBadgeHere = reviewPlayedMove && reviewPlayedMove.toCol === col && reviewPlayedMove.toRow === row
+                const reviewBadgeHere = reviewMeta && reviewPlayedMove && reviewPlayedMove.toCol === col && reviewPlayedMove.toRow === row
+                const reviewTintHere = reviewMeta && reviewPlayedMove && (reviewBadgeHere || (reviewPlayedMove.fromCol === col && reviewPlayedMove.fromRow === row))
                 const movable = canMovePiece(piece)
                 const draggingHere = dragGhost && sameSquare(dragGhost.piece, square)
 
@@ -696,17 +728,23 @@ export default function App() {
                       'square',
                       dark ? 'dark' : 'light',
                       selectedHere ? 'selected' : '',
-                      lastHere ? 'last-move' : '',
-                      reviewBadgeHere ? `review-square ${reviewMeta.tone}` : '',
+                      lastHere && !reviewTintHere ? 'last-move' : '',
+                      reviewTintHere ? 'review-square' : '',
+                      previewPly && lastHere ? 'line-square' : '',
                       move?.capture ? 'can-capture' : '',
                       move && !move.capture ? 'can-move' : ''
                     ].filter(Boolean).join(' ')}
+                    style={reviewTintHere ? { '--class-color': reviewMeta.color } : undefined}
                     onClick={() => handleSquareClick(col, row)}
                     aria-label={`${squareName(col, row)}${piece ? ` ${piece.color} ${piece.name}` : ''}`}
                   >
                     {displayCol === 0 && <span className="rank-label">{8 - row}</span>}
                     {displayRow === 7 && <span className="file-label">{files[col]}</span>}
-                    {reviewBadgeHere && <span className={`review-badge ${reviewMeta.tone}`}>{reviewMeta.icon}</span>}
+                    {reviewBadgeHere && (
+                      <span className="review-badge">
+                        <ClassIcon tag={reviewFrame.deliveredMate ? 'Best' : reviewFrame.qualityTag} size={28} />
+                      </span>
+                    )}
                     {piece && (
                       <span
                         className={['piece', piece.color, movable ? 'movable' : '', draggingHere ? 'dragging' : ''].filter(Boolean).join(' ')}
@@ -779,21 +817,52 @@ export default function App() {
           )}
           {error && <div className="notice error" role="alert">{error}</div>}
           {connectionError && game && <div className="notice error" role="alert">{connectionError}</div>}
-          {analysisNotice && (
-            <div className={`notice ${game.analysisStatus === 'failed' ? 'error' : 'info'}`} role="status">
-              {game.analysisStatus === 'running' && <span className="spinner" aria-hidden="true" />}
-              {analysisNotice}
-            </div>
-          )}
+          {analysisNotice && <div className="notice error" role="status">{analysisNotice}</div>}
 
           {inReview ? (
-            <ReviewPanel
-              game={game}
-              analyzing={analysisRunning}
-              onPrevious={() => stepAnalysis(-1)}
-              onNext={() => stepAnalysis(1)}
-              onExit={exitAnalysis}
-            />
+            <section className={`review-panel stage-${reviewStage}`} aria-label="Game review">
+              <div className="review-head">
+                <div className="review-tabs" role="tablist" aria-label="Review view">
+                  <button type="button" role="tab" aria-selected={reviewStage === 'summary'}
+                    className={reviewStage === 'summary' ? 'active' : ''} onClick={() => setReviewStage('summary')}>Summary</button>
+                  <button type="button" role="tab" aria-selected={reviewStage === 'moves'}
+                    className={reviewStage === 'moves' ? 'active' : ''} onClick={() => setReviewStage('moves')}>Moves</button>
+                </div>
+                <button type="button" className="quiet-action" onClick={exitAnalysis}>Exit review</button>
+              </div>
+
+              {reviewStage === 'summary' && game.analysisSummary ? (
+                <div className="review-scroll">
+                  <ReviewSummary
+                    summary={game.analysisSummary}
+                    entries={reviewEntries}
+                    onSelect={gotoPly}
+                    onStart={() => gotoPly(reviewPly >= 0 ? reviewPly : 0)}
+                  />
+                </div>
+              ) : (
+                <>
+                  <div className="review-scroll">
+                    <CoachCard
+                      frame={reviewFrame}
+                      entries={reviewEntries}
+                      linePreview={previewPly ? linePreview : null}
+                      onPlayLine={playLine}
+                      onStopLine={() => setLinePreview(null)}
+                    />
+                    <EvalGraph entries={reviewEntries} currentPly={reviewPly} onSelect={gotoPly} />
+                    <ReviewMoveList entries={reviewEntries} currentPly={reviewPly} onSelect={gotoPly} />
+                  </div>
+                  <ReviewNav
+                    ply={reviewPly}
+                    total={reviewFrame?.totalPlies ?? reviewEntries.length}
+                    entries={reviewEntries}
+                    disabled={!reviewFrame}
+                    onGoto={gotoPly}
+                  />
+                </>
+              )}
+            </section>
           ) : (
             <>
               <section className={`setup ${showSetup ? 'open' : ''}`}>
@@ -862,7 +931,9 @@ export default function App() {
                 )}
               </section>
 
-              <section className="moves-section" aria-label="Move history">
+              {showProgress && <AnalysisProgress progress={game.analysisProgress} entries={reviewEntries} />}
+
+              <section className={`moves-section ${showProgress ? 'is-hidden' : ''}`} aria-label="Move history">
                 <div className="section-head">
                   <h2>Moves</h2>
                   <span>{plyCount} ply</span>
@@ -1080,181 +1151,5 @@ function MoveTable({ displayMoves, emptyText }) {
         </li>
       ))}
     </ol>
-  )
-}
-
-function ReviewPanel({ game, analyzing, onPrevious, onNext, onExit }) {
-  const summary = game?.analysisSummary
-  const frame = game?.analysisFrame
-  const report = game?.analysisReport ?? []
-  const canReview = game?.analysisStatus === 'ready' && frame
-  const atStart = !canReview || frame.plyIndex < 0
-  const atEnd = !canReview || frame.plyIndex >= frame.totalPlies - 1
-
-  return (
-    <section className="review-panel" aria-label="Game review">
-      <div className="review-head">
-        <h2>Analysis</h2>
-        <span className="review-status">{analyzing ? 'running' : game?.analysisStatus ?? 'idle'}</span>
-        <button type="button" className="quiet-action" onClick={onExit} disabled={!game?.analysisMode}>Exit review</button>
-      </div>
-
-      <div className="review-scroll">
-        {summary ? (
-          <>
-            <AccuracyTable summary={summary} />
-            <EvalGraph entries={game.analysisEntries ?? []} currentPly={frame?.plyIndex ?? -1} />
-          </>
-        ) : (
-          <p className="review-hint">Run review after a few moves to get accuracy, mistakes, and best-move feedback.</p>
-        )}
-
-        {frame?.plyIndex >= 0 ? (
-          <CoachFeedback frame={frame} />
-        ) : (
-          <p className="review-hint">
-            <strong>{canReview ? 'Start review' : 'Run analysis'}</strong>{' '}
-            {canReview ? 'Use Next (or the arrow keys) to step through the game.' : 'Stockfish will classify each move and show the best line.'}
-          </p>
-        )}
-
-        <div className="section-head compact">
-          <h2>Moves</h2>
-          <span>{frame ? `${Math.max(0, frame.plyIndex + 1)} / ${frame.totalPlies}` : ''}</span>
-        </div>
-        <MoveTable displayMoves={game?.displayMoves ?? []} emptyText="Starting position" />
-
-        {report.length > 0 && (
-          <details className="report-details">
-            <summary>Full report</summary>
-            <div className="report-lines">
-              {report.slice(0, 8).map((line, index) => <div key={`${line}-${index}`}>{line}</div>)}
-            </div>
-          </details>
-        )}
-      </div>
-
-      <div className="review-nav">
-        <button type="button" onClick={onPrevious} disabled={atStart} aria-label="Previous move">‹ Previous</button>
-        <button type="button" onClick={onNext} disabled={atEnd} aria-label="Next move">Next ›</button>
-      </div>
-    </section>
-  )
-}
-
-function AccuracyTable({ summary }) {
-  const sideOf = (side, fallbackAccuracy) => side ?? {
-    accuracy: fallbackAccuracy ?? 100,
-    best: 0,
-    excellent: 0,
-    good: 0,
-    inaccuracies: 0,
-    mistakes: 0,
-    blunders: 0,
-    totalMoves: 0
-  }
-  const white = sideOf(summary.white, summary.whiteAccuracy)
-  const black = sideOf(summary.black, summary.blackAccuracy)
-  const rows = [
-    ['Best', 'best', 'best'],
-    ['Excellent', 'excellent', 'excellent'],
-    ['Good', 'good', 'good'],
-    ['Inaccuracy', 'inaccuracies', 'inaccuracy'],
-    ['Mistake', 'mistakes', 'mistake'],
-    ['Blunder', 'blunders', 'blunder']
-  ]
-
-  return (
-    <table className="accuracy-table">
-      <thead>
-        <tr>
-          <th scope="col"><span className="visually-hidden">Category</span></th>
-          <th scope="col">White</th>
-          <th scope="col">Black</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr className="accuracy-row">
-          <th scope="row">Accuracy</th>
-          <td><strong>{white.accuracy.toFixed(1)}</strong></td>
-          <td><strong>{black.accuracy.toFixed(1)}</strong></td>
-        </tr>
-        {rows.map(([label, key, tone]) => (
-          <tr key={key}>
-            <th scope="row"><span className={`tone-dot ${tone}`} aria-hidden="true" />{label}</th>
-            <td>{white[key]}</td>
-            <td>{black[key]}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  )
-}
-
-function CoachFeedback({ frame }) {
-  const meta = frameQualityMeta(frame)
-  const isBadMove = !frame.deliveredMate && ['Inaccuracy', 'Mistake', 'Severe Mistake', 'Blunder'].includes(frame.qualityTag)
-  const bestLine = frame.bestLine?.length ? frame.bestLine.slice(0, 6).join(' ') : null
-  const before = scoreText(frame.evalBefore, frame.mateBefore)
-  const after = scoreText(frame.evalAfter, frame.mateAfter)
-  let explanation
-  if (frame.deliveredMate) {
-    explanation = 'This move checkmated the opponent and ended the game.'
-  } else if (isBadMove && (frame.mateBefore != null || frame.mateAfter != null)) {
-    // Mate scores are stored as ±100 internally; a pawn-loss figure would be meaningless here.
-    explanation = `The move changed the evaluation from ${before} to ${after}.`
-  } else if (isBadMove) {
-    explanation = `The move changed the evaluation from ${before} to ${after}, costing about ${Math.max(0, frame.loss).toFixed(2)} pawns.`
-  } else {
-    explanation = `The move kept the position near Stockfish's recommendation, changing the evaluation from ${before} to ${after}.`
-  }
-
-  return (
-    <div className={`coach-card ${meta.tone}`}>
-      <div className="coach-title">
-        <span className={`classification-pill ${meta.tone}`}>{meta.icon}</span>
-        <strong>{frame.moveNumber}. {frame.whiteMove ? 'White' : 'Black'}: {frame.san} is {meta.label}</strong>
-        <em>{scoreBadge(frame)}</em>
-      </div>
-      <p>{explanation}</p>
-      {frame.gameEndMessage && !frame.deliveredMate && (
-        <p className="game-end-note">
-          Game over: {frame.gameEndMessage}
-          {frame.gameEndReason === 'timeout' ? ` (${frame.gameEndMessage.startsWith('White') ? 'Black' : 'White'} ran out of time).` : '.'}
-        </p>
-      )}
-      <div className="coach-actions">
-        <div>
-          <span>Best</span>
-          <strong>{frame.bestMove ?? 'n/a'}</strong>
-        </div>
-        <div>
-          <span>Played</span>
-          <strong>{frame.playedMove ?? 'n/a'}</strong>
-        </div>
-      </div>
-      {bestLine && <div className="continuation">Line: {bestLine}</div>}
-    </div>
-  )
-}
-
-function EvalGraph({ entries, currentPly }) {
-  if (!entries.length) return null
-  const points = entries.map((entry, index) => {
-    const x = entries.length === 1 ? 50 : (index / (entries.length - 1)) * 100
-    const clamped = Math.max(-8, Math.min(8, entry.evalAfter))
-    const y = 50 - (clamped / 8) * 42
-    return `${x.toFixed(2)},${y.toFixed(2)}`
-  }).join(' ')
-  const cursorX = currentPly <= 0 || entries.length === 1 ? 0 : (currentPly / (entries.length - 1)) * 100
-
-  return (
-    <svg className="eval-graph" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="Evaluation graph">
-      <rect x="0" y="0" width="100" height="50" className="eval-white" />
-      <rect x="0" y="50" width="100" height="50" className="eval-black" />
-      <line x1="0" y1="50" x2="100" y2="50" className="eval-midline" />
-      <polyline points={points} className="eval-line" />
-      {currentPly >= 0 && <line x1={cursorX} y1="0" x2={cursorX} y2="100" className="eval-cursor" />}
-    </svg>
   )
 }

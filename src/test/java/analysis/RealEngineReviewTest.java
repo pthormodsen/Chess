@@ -43,7 +43,8 @@ class RealEngineReviewTest {
             assertEquals(first.entries.get(i).bestMove, second.entries.get(i).bestMove, "ply " + i);
         }
         if (System.getenv("REVIEW_PRINT") != null) {
-            GameAnalyzer.Summary deep = new GameAnalyzer(engine, Integer.parseInt(System.getenv("REVIEW_PRINT")), 2).analyze(moves);
+            List<String> printMoves = System.getenv("REVIEW_PGN") == null ? moves : uci(System.getenv("REVIEW_PGN"));
+            GameAnalyzer.Summary deep = new GameAnalyzer(engine, Integer.parseInt(System.getenv("REVIEW_PRINT")), 2).analyze(printMoves);
             GameReviewFormatter.buildReport(deep, deep.entries.stream().map(e -> e.san).toList()).forEach(System.out::println);
         }
     }

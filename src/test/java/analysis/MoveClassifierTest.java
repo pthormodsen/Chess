@@ -38,21 +38,25 @@ class MoveClassifierTest {
     @Test
     void greatNeedsAnOnlyMove() {
         Input onlyMove = new Input(55, 55, 30.0, true, false, 0, false, null, false, null, null);
+        Input onlyMoveButLostAnyway = new Input(25, 25, 12.0, true, false, 0, false, null, false, null, null);
+        Input onlyMoveButStillWinning = new Input(95, 95, 80.0, true, false, 0, false, null, false, null, null);
         Input manyGoodMoves = new Input(55, 55, 52.0, true, false, 0, false, null, false, null, null);
         Input recapture = new Input(55, 55, 10.0, true, false, 0, true, null, false, null, null);
         Input alreadyMating = new Input(100, 100, 60.0, true, false, 0, false, 2, true, null, null);
 
         assertEquals(GREAT, classify(onlyMove).tag());
         assertEquals(BEST, classify(manyGoodMoves).tag());
-        assertEquals(BEST, classify(recapture).tag(), "taking back a piece is not a great find");
+        assertEquals(BEST, classify(onlyMoveButLostAnyway).tag(), "the result does not hinge on it");
+        assertEquals(BEST, classify(onlyMoveButStillWinning).tag(), "every alternative still wins");
+        assertEquals(BEST, classify(recapture).tag(), "recaptures, free captures and check evasions are not great finds");
         assertEquals(BEST, classify(alreadyMating).tag(), "continuing a forced mate is just best");
     }
 
     @Test
     void brilliantNeedsASoundSacrificeNotAnEvalJump() {
         Input soundSac = new Input(65, 66, 50.0, true, false, 3, false, null, false, null, null);
-        Input unsoundSac = new Input(45, 44, 30.0, true, false, 3, false, null, false, null, null);
-        Input noSacrifice = new Input(40, 90, 30.0, true, false, 0, false, null, false, null, null);
+        Input unsoundSac = new Input(45, 44, 20.0, true, false, 3, false, null, false, null, null);
+        Input noSacrifice = new Input(40, 90, 20.0, true, false, 0, false, null, false, null, null);
         Input cashingIn = new Input(99, 99, 98.0, true, false, 5, false, null, false, null, null);
         Input sacrificeIntoMate = new Input(99, 100, 98.0, true, false, 9, false, 2, true, null, null);
 

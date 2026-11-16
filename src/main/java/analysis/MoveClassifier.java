@@ -55,7 +55,7 @@ public final class MoveClassifier {
      * @param playedBest              the move is the engine's top choice (or scored identically to it)
      * @param book                    the position after the move is still opening theory
      * @param sacrifice               material (pawns) the move leaves en prise, net of what it captured
-     * @param obviousRecapture        it takes back on the square where the opponent just captured
+     * @param obviousMove             a recapture, a free capture or a reply to check: never a "great find"
      * @param moverMateBefore         mate-in-N the mover had before the move (N &gt; 0), else null
      * @param moverMateAfter          the mover still has a forced mate after the move
      * @param opponentLastLoss        how much the opponent's previous move cost them, null at the start
@@ -68,7 +68,7 @@ public final class MoveClassifier {
         boolean playedBest,
         boolean book,
         int sacrifice,
-        boolean obviousRecapture,
+        boolean obviousMove,
         Integer moverMateBefore,
         boolean moverMateAfter,
         Double opponentLastLoss,
@@ -129,15 +129,20 @@ public final class MoveClassifier {
             && (in.winBest() < 97 || in.moverMateAfter());
     }
 
-    /** The only good move, excluding forced recaptures and positions that stay hopeless or trivially won. */
+    /** Winning (2), roughly equal (1) or losing (0), by win chance. */
+    static int outcome(double win) {
+        return win >= 65 ? 2 : win > 35 ? 1 : 0;
+    }
+
+    /** The only good move, excluding obvious moves and positions whose outcome does not hinge on it. */
     private static boolean isGreat(Input in) {
         // Continuing a forced mate, or recapturing, is just the best move, not a "great find".
-        if (in.winSecondBest() == null || in.obviousRecapture() || in.moverMateBefore() != null) {
+        if (in.winSecondBest() == null || in.obviousMove() || in.moverMateBefore() != null) {
             return false;
         }
+        // The only move that keeps the result: every alternative drops from winning to equal, or equal to losing.
         boolean onlyMove = in.winBest() - in.winSecondBest() >= GREAT_MARGIN;
-        boolean meaningful = in.winBest() >= 30 && in.winSecondBest() < 90;
-        return onlyMove && meaningful;
+        return onlyMove && outcome(in.winBest()) > outcome(in.winSecondBest());
     }
 
     /**

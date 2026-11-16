@@ -299,7 +299,13 @@ public class GameAnalyzer {
 
         int captured = Tactics.capturedValue(before, move);
         Tactics.Capture offered = after.isMated() ? null : Tactics.bestCapture(after);
-        int sacrifice = offered == null ? 0 : Math.max(0, offered.gain() - captured);
+        // A sacrifice is created by this move: the moved piece is offered, or it stopped defending the piece.
+        boolean newlyOffered = offered != null && (offered.square() == move.getTo()
+            || Long.bitCount(before.squareAttackedBy(offered.square(), mover)) > Long.bitCount(after.squareAttackedBy(offered.square(), mover)));
+        int sacrifice = newlyOffered ? Math.max(0, offered.gain() - captured) : 0;
+        Tactics.Capture freeCapture = Tactics.bestCapture(before);
+        boolean obviousMove = recapture || before.isKingAttacked()
+            || (freeCapture != null && freeCapture.gain() >= 2 && freeCapture.move().equals(move));
 
         Double opponentLastLoss = previous == null || Double.isNaN(previous.winLoss) ? null : previous.winLoss;
         Double winBeforeOpponentMove = previous == null || Double.isNaN(previous.winBefore) ? null
@@ -310,7 +316,7 @@ public class GameAnalyzer {
         Integer opponentMateAfter = evalAfter.mateFor(mover.flip());
 
         MoveClassifier.Result result = MoveClassifier.classify(new MoveClassifier.Input(
-            winBest, winAfter, winSecond, playedBest || after.isMated(), book, sacrifice, recapture,
+            winBest, winAfter, winSecond, playedBest || after.isMated(), book, sacrifice, obviousMove,
             moverMateBefore, moverMateAfter != null, opponentLastLoss, winBeforeOpponentMove));
 
         double pawnsBefore = evalBefore.whitePawns();
