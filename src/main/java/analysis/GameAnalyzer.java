@@ -231,8 +231,28 @@ public class GameAnalyzer {
     public record Exploration(Entry entry, String fenAfter, List<String> replyLine, List<String> legalMoves,
                               double whitePawnsAfter, Integer whiteMateAfter, double whiteWinAfter) {}
 
-    /** Plays {@code uciMove} from {@code fen} and classifies it with the same rules as a reviewed game move. */
+    /** Searches one position (FEN) and returns its best lines, best first, from the side to move's perspective. */
+    @FunctionalInterface
+    public interface PositionSearch {
+        List<StockfishClient.Line> search(String fen) throws IOException;
+    }
+
+    /** Plays {@code uciMove} from {@code fen} and classifies it, with a fresh engine for this call. */
     public Exploration explore(String fen, String uciMove) throws IOException {
+        try (StockfishClient client = new StockfishClient(enginePath)) {
+            client.configureForAnalysis(multiPv, HASH_MB);
+            return explore(fen, uciMove, position -> {
+                client.newGame(); // independent searches: the result depends only on the position
+                return client.analyzeFen(position, depth);
+            });
+        }
+    }
+
+    /**
+     * Plays {@code uciMove} from {@code fen} and classifies it with the same rules as a reviewed game move.
+     * Both positions are searched independently through {@code search}, which may be cached or pooled.
+     */
+    public Exploration explore(String fen, String uciMove, PositionSearch search) throws IOException {
         Board before = new Board();
         before.loadFromFen(fen);
         Move move = Tactics.parseLegal(before, uciMove);
@@ -247,20 +267,16 @@ public class GameAnalyzer {
         boolean inBook = book.isBook(after) && (book.isBook(before) || ply == 0);
         OpeningBook.Opening opening = inBook ? book.opening(after) : null;
 
-        try (StockfishClient client = new StockfishClient(enginePath)) {
-            client.configureForAnalysis(multiPv, HASH_MB);
-            client.newGame();
-            PositionEval evalBefore = evaluateFen(client, before);
-            PositionEval evalAfter = evaluateFen(client, after);
-            Entry entry = buildEntry(ply, mover, uciMove, move, Tactics.toSan(before, uciMove), before, after,
-                evalBefore, evalAfter, inBook, opening == null ? null : opening.name(), null, false);
-            List<String> legal = after.legalMoves().stream().map(Object::toString).toList();
-            return new Exploration(entry, after.getFen(), evalAfter.top() == null ? List.of() : limit(evalAfter.top().pv, MAX_LINE_PLIES),
-                legal, evalAfter.whitePawns(), evalAfter.whiteMate(), evalAfter.whiteWin());
-        }
+        PositionEval evalBefore = evaluateFen(search, before);
+        PositionEval evalAfter = evaluateFen(search, after);
+        Entry entry = buildEntry(ply, mover, uciMove, move, Tactics.toSan(before, uciMove), before, after,
+            evalBefore, evalAfter, inBook, opening == null ? null : opening.name(), null, false);
+        List<String> legal = after.legalMoves().stream().map(Object::toString).toList();
+        return new Exploration(entry, after.getFen(), evalAfter.top() == null ? List.of() : limit(evalAfter.top().pv, MAX_LINE_PLIES),
+            legal, evalAfter.whitePawns(), evalAfter.whiteMate(), evalAfter.whiteWin());
     }
 
-    private PositionEval evaluateFen(StockfishClient client, Board board) throws IOException {
+    private PositionEval evaluateFen(PositionSearch search, Board board) throws IOException {
         Side stm = board.getSideToMove();
         if (board.isMated()) {
             return new PositionEval(stm, List.of(), true, false);
@@ -268,7 +284,15 @@ public class GameAnalyzer {
         if (board.isStaleMate() || board.isInsufficientMaterial()) {
             return new PositionEval(stm, List.of(), false, true);
         }
-        return new PositionEval(stm, client.analyzeFen(board.getFen(), depth), false, false);
+        return new PositionEval(stm, search.search(board.getFen()), false, false);
+    }
+
+    public int depth() {
+        return depth;
+    }
+
+    public int multiPv() {
+        return multiPv;
     }
 
     /** A searched (or terminal) position. Lines are from the side to move's perspective, best first. */

@@ -32,11 +32,31 @@ function formatApiError(err) {
   return err.message
 }
 
-// Pieces after a simple from→to move, for showing an explored move before Stockfish has answered.
+// Pieces after a move, for showing an explored move at once while Stockfish judges it.
+// Handles castling (the rook moves too), en passant and promotion, so the board is right immediately.
 function withMoveApplied(pieces, move) {
-  return (pieces ?? [])
+  const list = pieces ?? []
+  const mover = list.find(piece => piece.col === move.fromCol && piece.row === move.fromRow)
+  if (!mover) return list
+  const castling = mover.name === 'King' && Math.abs(move.toCol - move.fromCol) === 2
+  const rookFrom = castling ? (move.toCol > move.fromCol ? 7 : 0) : null
+  const rookTo = castling ? (move.toCol > move.fromCol ? 5 : 3) : null
+  const enPassant = mover.name === 'Pawn' && move.fromCol !== move.toCol
+    && !list.some(piece => piece.col === move.toCol && piece.row === move.toRow)
+  const promotes = mover.name === 'Pawn' && (move.toRow === 0 || move.toRow === 7)
+  return list
     .filter(piece => !(piece.col === move.toCol && piece.row === move.toRow))
-    .map(piece => (piece.col === move.fromCol && piece.row === move.fromRow ? { ...piece, col: move.toCol, row: move.toRow } : piece))
+    .filter(piece => !(enPassant && piece.col === move.toCol && piece.row === move.fromRow))
+    .map(piece => {
+      if (piece === mover) {
+        const name = promotes ? PROMOTION_NAMES[move.promotion ?? 'q'] : piece.name
+        return { ...piece, name, col: move.toCol, row: move.toRow }
+      }
+      if (castling && piece.name === 'Rook' && piece.color === mover.color && piece.row === move.fromRow && piece.col === rookFrom) {
+        return { ...piece, col: rookTo }
+      }
+      return piece
+    })
 }
 
 function sameMove(a, b) {
@@ -476,7 +496,7 @@ export default function App() {
     const base = exploring ? explore : { basePly: reviewPly, baseFen: reviewFrame.positionFen, plies: [], index: -1 }
     setPromotion(null)
     clearSelection()
-    setExplorePending({ fromCol: origin.col, fromRow: origin.row, toCol: target.col, toRow: target.row })
+    setExplorePending({ fromCol: origin.col, fromRow: origin.row, toCol: target.col, toRow: target.row, promotion: promotionPiece })
     try {
       const response = await axios.post('/api/game/explore', { fen, move: uci })
       const ply = response.data
@@ -851,6 +871,19 @@ export default function App() {
         <div className="play-area">
           {sideBar(topSide)}
 
+          {/* Shown over the top player bar (its clock is irrelevant in review), never over the board. */}
+          {exploring && !previewPly && (
+            <div className="line-banner explore" role="status">
+              <span>{explorePending ? 'Thinking…' : `Your line ${explore.index + 1}/${explore.plies.length}`}</span>
+              <button type="button" onClick={exitExplore}>Back to review ✕</button>
+            </div>
+          )}
+          {previewPly && (
+            <div className="line-banner" role="status">
+              <span>Best line {linePreview.index + 1}/{previewPlies.length}</span>
+              <button type="button" onClick={() => setLinePreview(null)}>Back to game ✕</button>
+            </div>
+          )}
           {inReview && reviewEval && (
             <EvalBar
               evaluation={!explorePly && reviewFrame?.deliveredMate
@@ -860,18 +893,6 @@ export default function App() {
             />
           )}
           <div className="board-frame">
-            {exploring && !previewPly && (
-              <div className="line-banner explore" role="status">
-                <span>{explorePending ? 'Stockfish is thinking…' : `Your line · ${explore.index + 1}/${explore.plies.length}`}</span>
-                <button type="button" onClick={exitExplore}>Back to review ✕</button>
-              </div>
-            )}
-            {previewPly && (
-              <div className="line-banner" role="status">
-                <span>Best line · {linePreview.index + 1}/{previewPlies.length}</span>
-                <button type="button" onClick={() => setLinePreview(null)}>Back to game ✕</button>
-              </div>
-            )}
             <div className="board" ref={boardRef} role="grid" aria-label="Chess board">
               {showBestArrow && <BoardArrow move={reviewBestMove} flipped={flipped} tone="best-suggestion" label="Best move" />}
               {nextPreviewPly && <BoardArrow move={uciSquares(nextPreviewPly.uci)} flipped={flipped} tone="best-suggestion" label="Next move in line" />}

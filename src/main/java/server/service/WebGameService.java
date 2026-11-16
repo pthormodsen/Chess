@@ -40,9 +40,12 @@ public class WebGameService {
     private final int analysisDepth;
     private final int analysisMultiPv;
     private final GameAnalyzer.ResultCache analysisCache;
-    // Review "explore" mode: stateless single-move analyses, capped separately and cached by position + move.
-    private final Semaphore exploreSlots;
+    // Review "explore" mode: stateless single-move analyses on a few warm engines. Results are cached per
+    // position + move, and searches per position (the position after one explored move is the one before the next).
+    private final int maxConcurrentExplores;
     private final Cache<String, ExploreView> exploreCache;
+    private final Cache<String, List<uci.StockfishClient.Line>> positionCache;
+    private EnginePool explorePool;
     private static final Pattern FEN = Pattern.compile(
         "[pnbrqkPNBRQK1-8]{1,8}(/[pnbrqkPNBRQK1-8]{1,8}){7} [wb] (-|[KQkq]{1,4}) (-|[a-h][36]) \\d{1,3} \\d{1,4}");
 
@@ -69,8 +72,9 @@ public class WebGameService {
     WebGameService(String stockfishPath, int maxSessions, Duration idleTimeout,
                    int maxEngineSessions, int maxConcurrentAnalyses, Ticker ticker,
                    int analysisDepth, int analysisMultiPv, int analysisCacheSize, int maxConcurrentExplores) {
-        this.exploreSlots = new Semaphore(Math.max(0, maxConcurrentExplores));
+        this.maxConcurrentExplores = Math.max(1, maxConcurrentExplores);
         this.exploreCache = Caffeine.newBuilder().maximumSize(2_000).build();
+        this.positionCache = Caffeine.newBuilder().maximumSize(5_000).build();
         this.analysisDepth = Math.max(1, Math.min(30, analysisDepth));
         this.analysisMultiPv = Math.max(1, Math.min(5, analysisMultiPv));
         Cache<String, GameAnalyzer.Summary> summaries = Caffeine.newBuilder()
@@ -108,6 +112,12 @@ public class WebGameService {
 
     @PreDestroy
     void shutdown() {
+        synchronized (this) {
+            if(explorePool != null){
+                explorePool.close();
+                explorePool = null;
+            }
+        }
         sessions.invalidateAll();
         sessions.cleanUp();
     }
@@ -198,26 +208,40 @@ public class WebGameService {
         if(engine == null){
             throw new CapacityException("Stockfish is not available on this server.");
         }
-        boolean acquired;
+        EnginePool pool = explorePool(engine);
         try {
-            acquired = exploreSlots.tryAcquire(3, java.util.concurrent.TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new CapacityException("Interrupted while waiting for the engine.");
-        }
-        if(!acquired){
-            throw new CapacityException("The engine is busy right now. Try the move again in a moment.");
-        }
-        try {
-            GameAnalyzer.Exploration result = new GameAnalyzer(engine, analysisDepth, analysisMultiPv).explore(board.getFen(), move);
+            GameAnalyzer analyzer = new GameAnalyzer(engine, analysisDepth, analysisMultiPv);
+            GameAnalyzer.Exploration result = analyzer.explore(board.getFen(), move, position -> {
+                String positionKey = analysisDepth + ":" + analysisMultiPv + ":" + position;
+                List<uci.StockfishClient.Line> known = positionCache.getIfPresent(positionKey);
+                if(known != null){
+                    return known;
+                }
+                List<uci.StockfishClient.Line> lines;
+                try {
+                    lines = pool.withEngine(3_000, client -> client.analyzeFen(position, analysisDepth));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new java.io.InterruptedIOException("Interrupted while waiting for the engine");
+                }
+                positionCache.put(positionKey, lines);
+                return lines;
+            });
             ExploreView view = ExploreView.from(result);
             exploreCache.put(key, view);
             return view;
         } catch (java.io.IOException e) {
             throw new CapacityException("Stockfish failed: " + e.getMessage());
-        } finally {
-            exploreSlots.release();
         }
+    }
+
+    private synchronized EnginePool explorePool(java.nio.file.Path engine) {
+        if(explorePool == null){
+            // Two warm engines are kept for up to five minutes; more start on demand up to the cap.
+            explorePool = new EnginePool(engine, maxConcurrentExplores, Math.min(2, maxConcurrentExplores),
+                analysisMultiPv, 32, java.time.Duration.ofMinutes(5).toMillis());
+        }
+        return explorePool;
     }
 
     private static com.github.bhlangonijr.chesslib.Board parseFen(String fen) {

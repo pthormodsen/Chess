@@ -1221,26 +1221,28 @@ button:focus-visible {
 }
 
 .line-banner {
+  /* Over the clock side of the top player bar (play-area is the positioned parent). */
   position: absolute;
   z-index: 8;
-  top: 8px;
-  left: 50%;
-  transform: translateX(-50%);
+  top: calc((var(--bar-h) - 36px) / 2);
+  right: 0;
+  height: 36px;
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 5px 6px 5px 12px;
+  padding: 0 4px 0 12px;
   border-radius: 999px;
-  background: rgba(30, 29, 27, 0.9);
+  background: #1e1d1b;
   color: var(--text-strong);
   font-size: 13px;
   font-weight: 800;
   white-space: nowrap;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 0 0 1px var(--field-border), 0 6px 18px rgba(0, 0, 0, 0.35);
 }
 
 .line-banner button {
   height: 28px;
+  white-space: nowrap;
   padding: 0 10px;
   border-radius: 999px;
   background: #81b64c;
@@ -1266,6 +1268,14 @@ button:focus-visible {
 
 .is-review .play-area {
   margin-left: calc(var(--eval-w) + var(--eval-gap));
+}
+
+@media (max-width: 430px) {
+  .line-banner {
+    gap: 6px;
+    padding-left: 10px;
+    font-size: 12px;
+  }
 }
 
 .eval-bar {
