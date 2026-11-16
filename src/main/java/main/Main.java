@@ -400,9 +400,10 @@ public class Main {
             + "Tag: " + formatQualityTag(e.qualityTag) + "\n"
             + String.format("Eval: %.2f → %.2f (Δ %.2f)\n", e.evalBefore, e.evalAfter, e.evalAfter - e.evalBefore)
             + String.format("Loss vs best: %.2f pawns\n", Math.max(0, e.loss))
-            + "Best: " + (e.bestMove == null ? "n/a" : friendlyMove(e.bestMove)) + "\n"
-            + (e.bestLine.isEmpty() ? "" : "Line: " + String.join(" ", e.bestLine.subList(0, Math.min(8, e.bestLine.size()))) + "\n")
-            + "\n" + buildMoveFeedback(e);
+            + "Best: " + (e.bestMoveSan != null ? e.bestMoveSan : e.bestMove == null ? "n/a" : friendlyMove(e.bestMove)) + "\n"
+            + (!e.bestLineSan.isEmpty() ? "Line: " + String.join(" ", e.bestLineSan.subList(0, Math.min(8, e.bestLineSan.size()))) + "\n"
+                : e.bestLine.isEmpty() ? "" : "Line: " + String.join(" ", e.bestLine.subList(0, Math.min(8, e.bestLine.size()))) + "\n")
+            + "\n" + (e.explanation != null ? e.explanation : buildMoveFeedback(e));
     }
 
     private static String formatQualityTag(String tag) {
@@ -413,8 +414,10 @@ public class Main {
             case "Best":           return "✔ Best";
             case "Excellent":      return "👍 Excellent";
             case "Good":           return "🙂 Good";
+            case "Book":           return "📖 Book";
             case "Inaccuracy":     return "?! Inaccuracy";
-            case "Mistake":        return "?? Mistake";
+            case "Mistake":        return "? Mistake";
+            case "Miss":           return "✖ Miss";
             case "Severe Mistake": return "☡ Severe Mistake";
             case "Blunder":        return "☠ Blunder";
             case "Mate":           return "♛ Forced Mate";

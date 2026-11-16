@@ -236,6 +236,41 @@ class WebGameServiceTest {
     }
 
     @Test
+    void reviewReportsProgressAndJumpsToAnyPly() throws Exception {
+        service = newService(fakeEngine(0), 2);
+        service.move(S1, new MoveRequest(4, 6, 4, 4));
+        service.move(S1, new MoveRequest(4, 1, 4, 3));
+        assertThrows(ConflictException.class, () -> service.jumpAnalysis(S1, 0), "no review yet");
+
+        service.analyze(S1);
+        waitFor(() -> "ready".equals(service.state(S1).analysisStatus()), "analysis finished");
+
+        GameState done = service.state(S1);
+        assertEquals(new WebGameService.AnalysisProgressView(2, 2), done.analysisProgress());
+        assertEquals("e4", done.analysisEntries().get(0).san());
+        assertEquals("Book", done.analysisEntries().get(0).qualityTag());
+        assertEquals(-1, done.analysisFrame().plyIndex(), "review opens on the summary / start position");
+
+        GameState second = service.jumpAnalysis(S1, 1);
+        assertEquals(1, second.analysisFrame().plyIndex());
+        assertEquals("e5", second.analysisFrame().san());
+        assertNotNull(second.analysisFrame().explanation());
+        assertEquals(-1, service.jumpAnalysis(S1, -7).analysisFrame().plyIndex());
+        assertEquals(1, service.jumpAnalysis(S1, 99).analysisFrame().plyIndex());
+    }
+
+    @Test
+    void finishedReviewsAreCachedAcrossSessions() throws Exception {
+        service = newService(fakeEngine(0), 2);
+        for (String session : new String[] {S1, S2}) {
+            service.move(session, new MoveRequest(4, 6, 4, 4));
+            service.analyze(session);
+            waitFor(() -> "ready".equals(service.state(session).analysisStatus()), "analysis finished");
+        }
+        assertEquals(service.state(S1).analysisSummary(), service.state(S2).analysisSummary());
+    }
+
+    @Test
     void analysisResultIsDroppedWhenGameChanges() throws Exception {
         service = newService(fakeEngine(300), 2);
         service.move(S1, new MoveRequest(4, 6, 4, 4));

@@ -1,6 +1,7 @@
 package server.service;
 
 import analysis.GameAnalyzer;
+import analysis.Tactics;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.RemovalCause;
@@ -16,6 +17,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Semaphore;
 import java.util.regex.Pattern;
 
@@ -34,18 +36,49 @@ public class WebGameService {
     // Global caps on Stockfish work: live engine opponents and concurrent game reviews.
     private final Semaphore engineSlots;
     private final Semaphore analysisSlots;
+    // Review settings. Fixed depth keeps reviews reproducible; finished reviews are cached across sessions.
+    private final int analysisDepth;
+    private final int analysisMultiPv;
+    private final GameAnalyzer.ResultCache analysisCache;
 
     @Autowired
     public WebGameService(@Value("${stockfish.path:}") String stockfishPath,
                           @Value("${chess.sessions.max:500}") int maxSessions,
                           @Value("${chess.sessions.idle-timeout:30m}") Duration idleTimeout,
                           @Value("${chess.engine.max-sessions:8}") int maxEngineSessions,
-                          @Value("${chess.analysis.max-concurrent:2}") int maxConcurrentAnalyses) {
-        this(stockfishPath, maxSessions, idleTimeout, maxEngineSessions, maxConcurrentAnalyses, Ticker.systemTicker());
+                          @Value("${chess.analysis.max-concurrent:2}") int maxConcurrentAnalyses,
+                          @Value("${chess.analysis.depth:14}") int analysisDepth,
+                          @Value("${chess.analysis.multipv:2}") int analysisMultiPv,
+                          @Value("${chess.analysis.cache-size:200}") int analysisCacheSize) {
+        this(stockfishPath, maxSessions, idleTimeout, maxEngineSessions, maxConcurrentAnalyses, Ticker.systemTicker(),
+            analysisDepth, analysisMultiPv, analysisCacheSize);
     }
 
     WebGameService(String stockfishPath, int maxSessions, Duration idleTimeout,
                    int maxEngineSessions, int maxConcurrentAnalyses, Ticker ticker) {
+        this(stockfishPath, maxSessions, idleTimeout, maxEngineSessions, maxConcurrentAnalyses, ticker,
+            GameAnalyzer.DEFAULT_DEPTH, GameAnalyzer.DEFAULT_MULTI_PV, 50);
+    }
+
+    WebGameService(String stockfishPath, int maxSessions, Duration idleTimeout,
+                   int maxEngineSessions, int maxConcurrentAnalyses, Ticker ticker,
+                   int analysisDepth, int analysisMultiPv, int analysisCacheSize) {
+        this.analysisDepth = Math.max(1, Math.min(30, analysisDepth));
+        this.analysisMultiPv = Math.max(1, Math.min(5, analysisMultiPv));
+        Cache<String, GameAnalyzer.Summary> summaries = Caffeine.newBuilder()
+            .maximumSize(Math.max(0, analysisCacheSize))
+            .build();
+        this.analysisCache = new GameAnalyzer.ResultCache() {
+            @Override
+            public GameAnalyzer.Summary get(String key) {
+                return summaries.getIfPresent(key);
+            }
+
+            @Override
+            public void put(String key, GameAnalyzer.Summary summary) {
+                summaries.put(key, summary);
+            }
+        };
         System.setProperty("java.awt.headless", "true");
         if(stockfishPath != null && !stockfishPath.isBlank() && System.getProperty("stockfish.path") == null){
             System.setProperty("stockfish.path", stockfishPath);
@@ -130,6 +163,10 @@ public class WebGameService {
         return session(sessionId).stepAnalysis(delta);
     }
 
+    public GameState jumpAnalysis(String sessionId, int ply) {
+        return session(sessionId).jumpAnalysis(ply);
+    }
+
     public GameState exitAnalysis(String sessionId) {
         return session(sessionId).exitAnalysis();
     }
@@ -175,6 +212,10 @@ public class WebGameService {
         private List<String> analysisReport = List.of("Press Analyze to run a Stockfish-powered review.");
         private AnalysisFrameView analysisFrame;
         private GameAnalyzer.Summary analysisSummary;
+        // While a review runs: moves classified so far, so the client can fill in the graph and move list.
+        private List<GameAnalyzer.Entry> partialEntries = List.of();
+        private int analysisDone;
+        private int analysisTotal;
         private boolean humanVsHuman = true;
         private boolean enginePlaysWhite = false;
         private int engineElo = 1200;
@@ -200,6 +241,9 @@ public class WebGameService {
             board.setHumanVsHuman(humanVsHuman);
             board.setEngineElo(engineElo);
             board.setEnginePlaysWhite(enginePlaysWhite);
+            board.setAnalysisDepth(analysisDepth);
+            board.setAnalysisMultiPv(analysisMultiPv);
+            board.setAnalysisCache(analysisCache);
             board.setStatusConsumer(message -> status = message);
             board.setGameEndConsumer(message -> status = message);
             board.setEvaluationConsumer(message -> evaluation = message);
@@ -348,9 +392,13 @@ public class WebGameService {
                 board.isEngineTurn(),
                 board.isAnalysisMode(),
                 analysisStatus,
+                "running".equals(analysisStatus) || analysisSummary != null
+                    ? new AnalysisProgressView(analysisSummary != null ? analysisSummary.totalMoves : analysisDone,
+                        analysisSummary != null ? analysisSummary.totalMoves : analysisTotal)
+                    : null,
                 analysisReport,
                 AnalysisSummaryView.from(analysisSummary),
-                AnalysisEntryView.from(analysisSummary),
+                AnalysisEntryView.from(analysisSummary != null ? analysisSummary.entries : partialEntries),
                 analysisFrame
             );
         }
@@ -413,6 +461,9 @@ public class WebGameService {
             analysisReport = List.of("Analyzing game...");
             analysisSummary = null;
             analysisFrame = null;
+            partialEntries = List.of();
+            analysisDone = 0;
+            analysisTotal = board.getMoveHistorySnapshot().size();
             board.analyzeGame(lines -> {
                 // Runs under this session's lock (callback executor) or synchronously from this method.
                 releaseAnalysisSlot();
@@ -421,6 +472,14 @@ public class WebGameService {
                 }
                 analysisReport = lines;
                 analysisStatus = board.isAnalysisMode() ? "ready" : "failed";
+                partialEntries = List.of();
+            }, progress -> {
+                if(generation != analysisGeneration){
+                    return;
+                }
+                partialEntries = progress.entries;
+                analysisDone = progress.done;
+                analysisTotal = progress.total;
             });
             return state();
         }
@@ -465,6 +524,15 @@ public class WebGameService {
             return state();
         }
 
+        synchronized GameState jumpAnalysis(int ply) {
+            ensureOpen();
+            if(!board.isAnalysisMode()){
+                throw new ConflictException("Run the game review first.");
+            }
+            board.jumpToAnalysisPly(ply);
+            return state();
+        }
+
         synchronized GameState exitAnalysis() {
             ensureOpen();
             board.exitAnalysisReview();
@@ -478,6 +546,9 @@ public class WebGameService {
             analysisReport = List.of(message);
             analysisSummary = null;
             analysisFrame = null;
+            partialEntries = List.of();
+            analysisDone = 0;
+            analysisTotal = 0;
         }
     }
 
@@ -593,11 +664,14 @@ public class WebGameService {
         boolean engineTurn,
         boolean analysisMode,
         String analysisStatus,
+        AnalysisProgressView analysisProgress,
         List<String> analysisReport,
         AnalysisSummaryView analysisSummary,
         List<AnalysisEntryView> analysisEntries,
         AnalysisFrameView analysisFrame
     ) {}
+
+    public record AnalysisProgressView(int done, int total) {}
 
     public record AnalysisSummaryView(
         double whiteAccuracy,
@@ -606,12 +680,15 @@ public class WebGameService {
         int bestCount,
         int inaccuracies,
         int mistakes,
+        int misses,
         int blunders,
         double avgLoss,
         double maxLoss,
         SideSummaryView white,
         SideSummaryView black,
-        int totalMoves
+        int totalMoves,
+        String eco,
+        String openingName
     ) {
         static AnalysisSummaryView from(GameAnalyzer.Summary summary) {
             if(summary == null){
@@ -624,12 +701,15 @@ public class WebGameService {
                 summary.bestCount,
                 summary.inaccuracies,
                 summary.mistakes,
+                summary.misses,
                 summary.blunders,
                 summary.avgLoss,
                 summary.maxLoss,
                 SideSummaryView.from(summary.white),
                 SideSummaryView.from(summary.black),
-                summary.totalMoves
+                summary.totalMoves,
+                summary.eco,
+                summary.openingName
             );
         }
     }
@@ -642,7 +722,8 @@ public class WebGameService {
         int inaccuracies,
         int mistakes,
         int blunders,
-        int totalMoves
+        int totalMoves,
+        Map<String, Integer> counts
     ) {
         static SideSummaryView from(GameAnalyzer.SideSummary summary) {
             if(summary == null){
@@ -656,10 +737,14 @@ public class WebGameService {
                 summary.inaccuracies,
                 summary.mistakes,
                 summary.blunders,
-                summary.totalMoves
+                summary.totalMoves,
+                summary.counts
             );
         }
     }
+
+    /** One step of the best line: UCI, SAN and the position after it (FEN), so clients can play it on the board. */
+    public record LinePlyView(String uci, String san, String fen) {}
 
     public record AnalysisFrameView(
         int plyIndex,
@@ -668,24 +753,37 @@ public class WebGameService {
         String qualityTag,
         String playedMove,
         String bestMove,
+        String bestMoveSan,
         List<String> bestLine,
+        List<LinePlyView> bestLinePlies,
         double evalBefore,
         double evalAfter,
         Integer mateBefore,
         Integer mateAfter,
+        Double winBefore,
+        Double winAfter,
         double loss,
+        Double winLoss,
         String severity,
+        String explanation,
+        String opening,
         Integer moveNumber,
         Boolean whiteMove,
         boolean deliveredMate,
         String gameEndReason,
         String gameEndMessage
     ) {
+        static final int MAX_LINE_PLIES = 10;
+
         static AnalysisFrameView from(Board.AnalysisFrame frame) {
             if(frame == null){
                 return null;
             }
             GameAnalyzer.Entry entry = frame.entry;
+            List<LinePlyView> plies = entry == null ? List.of() : Tactics.renderLine(entry.fenBefore,
+                    entry.bestLine.subList(0, Math.min(MAX_LINE_PLIES, entry.bestLine.size()))).stream()
+                .map(ply -> new LinePlyView(ply.uci(), ply.san(), ply.fen()))
+                .toList();
             return new AnalysisFrameView(
                 frame.plyIndex,
                 frame.totalPlies,
@@ -693,13 +791,20 @@ public class WebGameService {
                 entry == null ? null : entry.qualityTag,
                 entry == null ? null : entry.playedMove,
                 entry == null ? null : entry.bestMove,
+                entry == null ? null : entry.bestMoveSan,
                 entry == null ? List.of() : entry.bestLine,
+                plies,
                 entry == null ? 0 : entry.evalBefore,
                 entry == null ? 0 : entry.evalAfter,
                 entry == null ? null : entry.mateBefore,
                 entry == null ? null : entry.mateAfter,
+                entry == null ? null : finite(entry.winBefore),
+                entry == null ? null : finite(entry.winAfter),
                 entry == null ? 0 : entry.loss,
+                entry == null ? null : finite(entry.winLoss),
                 entry == null ? null : entry.severity,
+                entry == null ? null : entry.explanation,
+                entry == null ? null : entry.opening,
                 frame.hasMove() ? frame.moveNumber() : null,
                 frame.hasMove() ? frame.isWhiteMove() : null,
                 frame.deliveredMate,
@@ -709,36 +814,45 @@ public class WebGameService {
         }
     }
 
+    /** Compact per-move data for the move list and evaluation graph (sent on every poll). */
     public record AnalysisEntryView(
         int plyIndex,
         boolean whiteMove,
+        String san,
         String playedMove,
         String bestMove,
-        List<String> bestLine,
         double evalBefore,
         double evalAfter,
+        Integer mateAfter,
+        Double winAfter,
         double loss,
         String severity,
         String qualityTag
     ) {
-        static List<AnalysisEntryView> from(GameAnalyzer.Summary summary) {
-            if(summary == null){
+        static List<AnalysisEntryView> from(List<GameAnalyzer.Entry> entries) {
+            if(entries == null){
                 return List.of();
             }
-            return summary.entries.stream()
+            return entries.stream()
                 .map(entry -> new AnalysisEntryView(
                     entry.plyIndex,
                     entry.isWhite,
+                    entry.san,
                     entry.playedMove,
                     entry.bestMove,
-                    entry.bestLine,
                     entry.evalBefore,
                     entry.evalAfter,
+                    entry.mateAfter,
+                    finite(entry.winAfter),
                     entry.loss,
                     entry.severity,
                     entry.qualityTag
                 ))
                 .toList();
         }
+    }
+
+    private static Double finite(double value) {
+        return Double.isNaN(value) || Double.isInfinite(value) ? null : value;
     }
 }

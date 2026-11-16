@@ -97,6 +97,15 @@ public class GameController {
         return gameService.stepAnalysis(sessionId, 1);
     }
 
+    /** Jumps the review to a ply; -1 is the starting position. */
+    @PostMapping("/analysis/goto")
+    public GameState gotoAnalysisMove(@RequestHeader(value = "X-Chess-Session", required = false) String sessionId,
+                                      @RequestBody AnalysisGotoRequest request) {
+        return gameService.jumpAnalysis(sessionId, request == null ? -1 : request.ply());
+    }
+
+    public record AnalysisGotoRequest(int ply) {}
+
     @PostMapping("/analysis/exit")
     public GameState exitAnalysis(@RequestHeader(value = "X-Chess-Session", required = false) String sessionId) {
         return gameService.exitAnalysis(sessionId);

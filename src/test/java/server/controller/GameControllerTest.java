@@ -69,6 +69,14 @@ class GameControllerTest {
     }
 
     @Test
+    void gotoOutsideReviewIsAConflict() throws Exception {
+        mvc.perform(post("/api/game/analysis/goto").header("X-Chess-Session", SESSION)
+                .contentType(MediaType.APPLICATION_JSON).content("{\"ply\":3}"))
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.error").exists());
+    }
+
+    @Test
     void analyzeWithoutEngineReturnsImmediately() throws Exception {
         mvc.perform(post("/api/game/analyze").header("X-Chess-Session", SESSION))
             .andExpect(status().isOk())
