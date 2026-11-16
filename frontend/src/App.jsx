@@ -636,6 +636,8 @@ export default function App() {
       detail={!(game?.humanVsHuman ?? true) && side === engineSide ? `${game?.engineElo ?? engineElo}` : null}
       clock={(side === 'white' ? game?.whiteClock : game?.blackClock) ?? '10:00'}
       active={game?.turn === side && game?.active && !game?.awaitingStart}
+      clockRunning={game?.turn === side && game?.active && game?.clockStarted && !game?.analysisMode}
+      untimed={Boolean(game?.untimed)}
       thinking={engineTurn && side === engineSide}
       captures={side === 'white' ? whiteCaptures : blackCaptures}
       advantage={side === 'white' ? balance : -balance}
@@ -1085,7 +1087,7 @@ function BoardArrow({ move, flipped, tone, label }) {
   )
 }
 
-function PlayerBar({ side, name, detail, clock, active, thinking, captures, advantage }) {
+function PlayerBar({ side, name, detail, clock, active, clockRunning, untimed, thinking, captures, advantage }) {
   return (
     <div className={`player-bar ${active ? 'active' : ''}`}>
       <div className="player-identity">
@@ -1111,7 +1113,12 @@ function PlayerBar({ side, name, detail, clock, active, thinking, captures, adva
           </div>
         </div>
       </div>
-      <div className={`clock ${active ? 'running' : ''}`}>{clock}</div>
+      <div
+        className={`clock ${clockRunning ? 'running' : ''} ${untimed ? 'untimed' : ''}`}
+        title={untimed ? 'Imported game – no clock' : undefined}
+      >
+        {clock}
+      </div>
     </div>
   )
 }

@@ -19,6 +19,29 @@ class BoardTest {
     }
 
     @Test
+    void untimedGameNeverStartsOrChargesTheClock() throws Exception {
+        Board board = new Board(Runnable::run);
+        board.startUntimedGame();
+        for (String move : new String[] {"e2e4", "e7e5", "g1f3"}) {
+            assertTrue(board.playUciMove(move), move);
+        }
+        // Pretend the last clock update was a minute ago: an untimed game must not charge it.
+        Field last = Board.class.getDeclaredField("lastClockUpdateMillis");
+        last.setAccessible(true);
+        last.set(board, System.currentTimeMillis() - 60_000);
+
+        assertTrue(board.isUntimed());
+        assertFalse(board.isClockStarted());
+        assertEquals(board.getWhiteClockText(), board.getBlackClockText(), "neither clock moved");
+        assertFalse(board.isGameOver());
+
+        board.startNewGame();
+        assertFalse(board.isUntimed(), "a new game is timed again");
+        assertTrue(board.playUciMove("e2e4"));
+        assertTrue(board.isClockStarted());
+    }
+
+    @Test
     void lastMoveTracksOriginAndDestination() {
         Board board = createBoardWithKings(4, 7, 4, 0);
 

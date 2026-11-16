@@ -301,6 +301,10 @@ h2 {
   transition: background 0.15s ease, color 0.15s ease;
 }
 
+.clock.untimed {
+  opacity: 0.45;
+}
+
 .clock.running {
   background: var(--clock-active-bg);
   color: var(--clock-active-text);

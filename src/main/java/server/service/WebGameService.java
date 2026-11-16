@@ -373,6 +373,7 @@ public class WebGameService {
                 board.isGameActive(),
                 board.isGameOver(),
                 board.isClockStarted(),
+                board.isUntimed(),
                 status,
                 evaluation,
                 board.getWhiteClockText(),
@@ -502,7 +503,8 @@ public class WebGameService {
             boolean wasHumanVsHuman = humanVsHuman;
             resetAnalysis("Imported " + moves.size() + " ply from PGN. Press Analyze to review it.");
             board.setHumanVsHuman(true);
-            board.startNewGame();
+            // Replayed moves are history, not play: the imported game has no running clock.
+            board.startUntimedGame();
             for(String move : moves){
                 if(!board.playUciMove(move)){
                     board.setHumanVsHuman(wasHumanVsHuman);
@@ -645,6 +647,7 @@ public class WebGameService {
         boolean active,
         boolean gameOver,
         boolean clockStarted,
+        boolean untimed,
         String status,
         String evaluation,
         String whiteClock,

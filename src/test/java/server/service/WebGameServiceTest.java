@@ -286,6 +286,35 @@ class WebGameServiceTest {
     }
 
     @Test
+    void importedGamesHaveNoRunningClockInLiveViewOrReview() throws Exception {
+        service = newService(fakeEngine(0), 2);
+        GameState imported = service.importPgn(S1, new PgnImportRequest("1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 *"));
+        assertTrue(imported.untimed());
+        assertFalse(imported.clockStarted());
+
+        Thread.sleep(1_100); // a running clock would lose a second here
+        GameState later = service.state(S1);
+        assertEquals(imported.whiteClock(), later.whiteClock());
+        assertEquals(imported.blackClock(), later.blackClock());
+
+        service.analyze(S1);
+        waitFor(() -> "ready".equals(service.state(S1).analysisStatus()), "analysis finished");
+        service.jumpAnalysis(S1, 3);
+        GameState afterReview = service.exitAnalysis(S1);
+        assertFalse(afterReview.clockStarted());
+        assertEquals(imported.whiteClock(), afterReview.whiteClock());
+        assertEquals(imported.blackClock(), afterReview.blackClock());
+
+        // Continuing the imported game by hand does not start a clock either; a new game does.
+        GameState continued = service.move(S1, new MoveRequest(1, 7, 2, 5)).state(); // Nc3
+        assertFalse(continued.clockStarted());
+        service.startNewGame(S1, new NewGameRequest(null, true, null, null));
+        GameState fresh = service.move(S1, new MoveRequest(4, 6, 4, 4)).state();
+        assertFalse(fresh.untimed());
+        assertTrue(fresh.clockStarted());
+    }
+
+    @Test
     void importedUnderpromotionIsReplayedFaithfully() {
         service = newService(null, 0);
 

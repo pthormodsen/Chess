@@ -87,6 +87,8 @@ public class Board extends JPanel {
     private long lastClockUpdateMillis = 0L;
     private javax.swing.Timer clockTimer;
     private boolean clockStarted = false;
+    // Untimed games (e.g. imported PGNs): the clock never starts, so no time is charged and nobody flags.
+    private boolean untimed = false;
     private String lastResultTag = "*";
     // Why the game ended, decided by board rules / clocks (never by engine evaluation). Null while the game is running.
     private GameEndReason gameEndReason;
@@ -352,6 +354,7 @@ public class Board extends JPanel {
     }
 
     public void startNewGame(){
+        untimed = false;
         clearAnalysisReview();
         gameEndReason = null;
         gameEndMessage = null;
@@ -381,6 +384,20 @@ public class Board extends JPanel {
         }
         notifyEvaluation();
         repaint();
+    }
+
+    /**
+     * A fresh game without a clock, used for replaying imported games: moves are recorded as usual,
+     * but neither clock starts or runs, in live play or in review. {@link #startNewGame()} is timed again.
+     */
+    public synchronized void startUntimedGame(){
+        startNewGame();
+        untimed = true;
+        notifyClock();
+    }
+
+    public synchronized boolean isUntimed(){
+        return untimed;
     }
 
     public void enableManualSetup(){
@@ -2214,7 +2231,7 @@ public class Board extends JPanel {
     }
 
     private void startClock(){
-        if(clockStarted){
+        if(clockStarted || untimed){
             return;
         }
         clockStarted = true;
@@ -2238,7 +2255,7 @@ public class Board extends JPanel {
     }
 
     private synchronized void settleClock(){
-        if(!isGameActive || isGameOver){
+        if(!isGameActive || isGameOver || untimed){
             lastClockUpdateMillis = 0L;
             return;
         }
