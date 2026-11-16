@@ -40,6 +40,11 @@ public class WebGameService {
     private final int analysisDepth;
     private final int analysisMultiPv;
     private final GameAnalyzer.ResultCache analysisCache;
+    // Review "explore" mode: stateless single-move analyses, capped separately and cached by position + move.
+    private final Semaphore exploreSlots;
+    private final Cache<String, ExploreView> exploreCache;
+    private static final Pattern FEN = Pattern.compile(
+        "[pnbrqkPNBRQK1-8]{1,8}(/[pnbrqkPNBRQK1-8]{1,8}){7} [wb] (-|[KQkq]{1,4}) (-|[a-h][36]) \\d{1,3} \\d{1,4}");
 
     @Autowired
     public WebGameService(@Value("${stockfish.path:}") String stockfishPath,
@@ -49,20 +54,23 @@ public class WebGameService {
                           @Value("${chess.analysis.max-concurrent:2}") int maxConcurrentAnalyses,
                           @Value("${chess.analysis.depth:14}") int analysisDepth,
                           @Value("${chess.analysis.multipv:2}") int analysisMultiPv,
-                          @Value("${chess.analysis.cache-size:200}") int analysisCacheSize) {
+                          @Value("${chess.analysis.cache-size:200}") int analysisCacheSize,
+                          @Value("${chess.explore.max-concurrent:4}") int maxConcurrentExplores) {
         this(stockfishPath, maxSessions, idleTimeout, maxEngineSessions, maxConcurrentAnalyses, Ticker.systemTicker(),
-            analysisDepth, analysisMultiPv, analysisCacheSize);
+            analysisDepth, analysisMultiPv, analysisCacheSize, maxConcurrentExplores);
     }
 
     WebGameService(String stockfishPath, int maxSessions, Duration idleTimeout,
                    int maxEngineSessions, int maxConcurrentAnalyses, Ticker ticker) {
         this(stockfishPath, maxSessions, idleTimeout, maxEngineSessions, maxConcurrentAnalyses, ticker,
-            GameAnalyzer.DEFAULT_DEPTH, GameAnalyzer.DEFAULT_MULTI_PV, 50);
+            GameAnalyzer.DEFAULT_DEPTH, GameAnalyzer.DEFAULT_MULTI_PV, 50, 4);
     }
 
     WebGameService(String stockfishPath, int maxSessions, Duration idleTimeout,
                    int maxEngineSessions, int maxConcurrentAnalyses, Ticker ticker,
-                   int analysisDepth, int analysisMultiPv, int analysisCacheSize) {
+                   int analysisDepth, int analysisMultiPv, int analysisCacheSize, int maxConcurrentExplores) {
+        this.exploreSlots = new Semaphore(Math.max(0, maxConcurrentExplores));
+        this.exploreCache = Caffeine.newBuilder().maximumSize(2_000).build();
         this.analysisDepth = Math.max(1, Math.min(30, analysisDepth));
         this.analysisMultiPv = Math.max(1, Math.min(5, analysisMultiPv));
         Cache<String, GameAnalyzer.Summary> summaries = Caffeine.newBuilder()
@@ -161,6 +169,75 @@ public class WebGameService {
 
     public GameState stepAnalysis(String sessionId, int delta) {
         return session(sessionId).stepAnalysis(delta);
+    }
+
+    /** Legal moves (UCI) in a position; no engine involved. */
+    public ExploreLegalView exploreLegal(String sessionId, ExploreRequest request) {
+        session(sessionId);
+        com.github.bhlangonijr.chesslib.Board board = parseFen(request == null ? null : request.fen());
+        return new ExploreLegalView(board.getFen(), board.legalMoves().stream().map(Object::toString).toList());
+    }
+
+    /**
+     * Plays one move from any position and judges it like a reviewed game move: classification, explanation,
+     * the better alternative and the evaluation afterwards. Stateless; used to try other moves during review.
+     */
+    public ExploreView explore(String sessionId, ExploreRequest request) {
+        session(sessionId);
+        com.github.bhlangonijr.chesslib.Board board = parseFen(request == null ? null : request.fen());
+        String move = request.move() == null ? "" : request.move().trim().toLowerCase();
+        if(!move.matches("[a-h][1-8][a-h][1-8][qrbn]?") || Tactics.parseLegal(board, move) == null){
+            throw new IllegalArgumentException("Illegal move in this position: " + move);
+        }
+        String key = analysisDepth + ":" + analysisMultiPv + ":" + board.getFen() + ":" + move;
+        ExploreView cached = exploreCache.getIfPresent(key);
+        if(cached != null){
+            return cached;
+        }
+        java.nio.file.Path engine = Board.configuredEnginePath();
+        if(engine == null){
+            throw new CapacityException("Stockfish is not available on this server.");
+        }
+        boolean acquired;
+        try {
+            acquired = exploreSlots.tryAcquire(3, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new CapacityException("Interrupted while waiting for the engine.");
+        }
+        if(!acquired){
+            throw new CapacityException("The engine is busy right now. Try the move again in a moment.");
+        }
+        try {
+            GameAnalyzer.Exploration result = new GameAnalyzer(engine, analysisDepth, analysisMultiPv).explore(board.getFen(), move);
+            ExploreView view = ExploreView.from(result);
+            exploreCache.put(key, view);
+            return view;
+        } catch (java.io.IOException e) {
+            throw new CapacityException("Stockfish failed: " + e.getMessage());
+        } finally {
+            exploreSlots.release();
+        }
+    }
+
+    private static com.github.bhlangonijr.chesslib.Board parseFen(String fen) {
+        String value = fen == null ? "" : fen.trim();
+        if(value.length() > 100 || !FEN.matcher(value).matches()){
+            throw new IllegalArgumentException("A valid FEN is required.");
+        }
+        try {
+            com.github.bhlangonijr.chesslib.Board board = new com.github.bhlangonijr.chesslib.Board();
+            board.loadFromFen(value);
+            if(board.getPieceLocation(com.github.bhlangonijr.chesslib.Piece.WHITE_KING).size() != 1
+                || board.getPieceLocation(com.github.bhlangonijr.chesslib.Piece.BLACK_KING).size() != 1){
+                throw new IllegalArgumentException("A position needs exactly one king per side.");
+            }
+            return board;
+        } catch (IllegalArgumentException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            throw new IllegalArgumentException("A valid FEN is required.");
+        }
     }
 
     public GameState jumpAnalysis(String sessionId, int ply) {
@@ -676,6 +753,47 @@ public class WebGameService {
 
     public record AnalysisProgressView(int done, int total) {}
 
+    public record ExploreRequest(String fen, String move) {}
+
+    public record ExploreLegalView(String fen, List<String> legalMoves) {}
+
+    /** One explored move: its judgement (like a review frame) plus the new position to continue from. */
+    public record ExploreView(
+        String fen,
+        String uci,
+        String san,
+        int moveNumber,
+        boolean whiteMove,
+        String qualityTag,
+        String explanation,
+        String opening,
+        String bestMove,
+        String bestMoveSan,
+        List<LinePlyView> bestLinePlies,
+        double evalAfter,
+        Integer mateAfter,
+        double winAfter,
+        boolean deliveredMate,
+        String gameOver,
+        List<String> legalMoves
+    ) {
+        static ExploreView from(GameAnalyzer.Exploration result) {
+            GameAnalyzer.Entry entry = result.entry();
+            List<LinePlyView> plies = Tactics.renderLine(entry.fenBefore,
+                    entry.bestLine.subList(0, Math.min(AnalysisFrameView.MAX_LINE_PLIES, entry.bestLine.size()))).stream()
+                .map(ply -> new LinePlyView(ply.uci(), ply.san(), ply.fen()))
+                .toList();
+            com.github.bhlangonijr.chesslib.Board after = new com.github.bhlangonijr.chesslib.Board();
+            after.loadFromFen(result.fenAfter());
+            String gameOver = after.isMated() ? "checkmate"
+                : after.isStaleMate() ? "stalemate"
+                : after.isInsufficientMaterial() ? "insufficient material" : null;
+            return new ExploreView(result.fenAfter(), entry.playedMove, entry.san, entry.plyIndex / 2 + 1, entry.isWhite,
+                entry.qualityTag, entry.explanation, entry.opening, entry.bestMove, entry.bestMoveSan, plies,
+                entry.evalAfter, entry.mateAfter, entry.winAfter, after.isMated(), gameOver, result.legalMoves());
+        }
+    }
+
     public record AnalysisSummaryView(
         double whiteAccuracy,
         double blackAccuracy,
@@ -774,9 +892,28 @@ public class WebGameService {
         Boolean whiteMove,
         boolean deliveredMate,
         String gameEndReason,
-        String gameEndMessage
+        String gameEndMessage,
+        String positionFen
     ) {
         static final int MAX_LINE_PLIES = 10;
+        private static final String START_FEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+
+        /** FEN of the position shown at this frame (after the move), from the review entries. */
+        private static String positionFen(Board.AnalysisFrame frame) {
+            if(frame.summary == null || frame.summary.entries.isEmpty()){
+                return frame.plyIndex < 0 ? START_FEN : null;
+            }
+            List<GameAnalyzer.Entry> entries = frame.summary.entries;
+            if(frame.plyIndex < 0){
+                return entries.get(0).fenBefore;
+            }
+            if(frame.plyIndex + 1 < entries.size()){
+                return entries.get(frame.plyIndex + 1).fenBefore;
+            }
+            GameAnalyzer.Entry last = entries.get(Math.min(frame.plyIndex, entries.size() - 1));
+            List<Tactics.LinePly> after = Tactics.renderLine(last.fenBefore, List.of(last.playedMove));
+            return after.isEmpty() ? null : after.get(0).fen();
+        }
 
         static AnalysisFrameView from(Board.AnalysisFrame frame) {
             if(frame == null){
@@ -812,7 +949,8 @@ public class WebGameService {
                 frame.hasMove() ? frame.isWhiteMove() : null,
                 frame.deliveredMate,
                 frame.gameEndReason == null ? null : frame.gameEndReason.code,
-                frame.gameEndMessage
+                frame.gameEndMessage,
+                positionFen(frame)
             );
         }
     }

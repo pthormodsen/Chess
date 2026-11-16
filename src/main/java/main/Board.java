@@ -1289,20 +1289,24 @@ public class Board extends JPanel {
         if(engineBinaryPath != null){
             return engineBinaryPath;
         }
+        engineBinaryPath = configuredEnginePath();
+        return engineBinaryPath;
+    }
+
+    /** Stockfish from the STOCKFISH_PATH env var, else the stockfish.path property; null if unset or missing. */
+    public static Path configuredEnginePath(){
         String configuredPath = System.getenv("STOCKFISH_PATH");
-        if(configuredPath == null){
+        if(configuredPath == null || configuredPath.isBlank()){
             configuredPath = System.getProperty("stockfish.path");
         }
-        if(configuredPath == null){
+        if(configuredPath == null || configuredPath.isBlank()){
             return null;
         }
-
         Path enginePath = Paths.get(configuredPath);
         if(!Files.exists(enginePath)){
             System.err.println("Stockfish engine not found at " + enginePath.toAbsolutePath());
             return null;
         }
-        engineBinaryPath = enginePath;
         return enginePath;
     }
 

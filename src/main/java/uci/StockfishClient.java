@@ -166,7 +166,19 @@ public class StockfishClient implements Closeable {
      */
     public synchronized List<Line> analyzeLines(String moves, int depth) throws IOException {
         String sanitizedMoves = moves == null ? "" : moves.trim();
-        sendCommand(sanitizedMoves.isEmpty() ? "position startpos" : "position startpos moves " + sanitizedMoves);
+        return search(sanitizedMoves.isEmpty() ? "position startpos" : "position startpos moves " + sanitizedMoves, depth);
+    }
+
+    /** Like {@link #analyzeLines} for an arbitrary position given as FEN (no move history, so no repetition draws). */
+    public synchronized List<Line> analyzeFen(String fen, int depth) throws IOException {
+        if (fen == null || fen.isBlank()) {
+            throw new IllegalArgumentException("FEN is required");
+        }
+        return search("position fen " + fen.trim(), depth);
+    }
+
+    private List<Line> search(String positionCommand, int depth) throws IOException {
+        sendCommand(positionCommand);
         sendCommand("go depth " + Math.max(1, depth));
 
         java.util.TreeMap<Integer, Line> lines = new java.util.TreeMap<>();

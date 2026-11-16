@@ -338,7 +338,7 @@ function MoveCell({ entry, current, onSelect }) {
 
 // ---------- Coach card ----------
 
-export function CoachCard({ frame, entries, linePreview, onPlayLine, onStopLine }) {
+export function CoachCard({ frame, entries, linePreview, onPlayLine, onStopLine, evaluation: evaluationOverride }) {
   if (!frame || frame.plyIndex < 0) {
     return (
       <div className="coach-card neutral">
@@ -350,7 +350,7 @@ export function CoachCard({ frame, entries, linePreview, onPlayLine, onStopLine 
   const meta = classMeta(tag)
   const evaluation = frame.deliveredMate
     ? { pawns: 0, mate: null, result: frame.whiteMove ? '1-0' : '0-1' }
-    : evalAtPly(entries, frame.plyIndex)
+    : evaluationOverride ?? evalAtPly(entries, frame.plyIndex)
   const mover = frame.whiteMove ? 'White' : 'Black'
   const plies = frame.bestLinePlies ?? []
   const playedBest = frame.bestMove && frame.bestMove === frame.playedMove
@@ -376,11 +376,11 @@ export function CoachCard({ frame, entries, linePreview, onPlayLine, onStopLine 
         <div className="best-line">
           <div className="best-line-head">
             <span>{playedBest ? 'Engine line' : <>Best was <b>{frame.bestMoveSan ?? plies[0].san}</b></>}</span>
-            {linePreview ? (
+            {onPlayLine && (linePreview ? (
               <button type="button" className="line-action" onClick={onStopLine}>Back to game</button>
             ) : (
               <button type="button" className="line-action" onClick={() => onPlayLine(0)}>▶ Show on board</button>
-            )}
+            ))}
           </div>
           <div className="line-moves">
             {plies.map((ply, index) => {
@@ -389,6 +389,8 @@ export function CoachCard({ frame, entries, linePreview, onPlayLine, onStopLine 
               const number = Math.floor(absolute / 2) + 1
               const whiteToMove = absolute % 2 === 0
               const prefix = whiteToMove ? `${number}.` : index === 0 ? `${number}...` : ''
+              const label = <>{prefix && <span className="line-number">{prefix}</span>}{ply.san}</>
+              if (!onPlayLine) return <span key={`${ply.uci}-${index}`} className="line-move static">{label}</span>
               return (
                 <button
                   key={`${ply.uci}-${index}`}
@@ -396,7 +398,7 @@ export function CoachCard({ frame, entries, linePreview, onPlayLine, onStopLine 
                   className={`line-move ${index === lineIndex ? 'current' : ''}`}
                   onClick={() => onPlayLine(index)}
                 >
-                  {prefix && <span className="line-number">{prefix}</span>}{ply.san}
+                  {label}
                 </button>
               )
             })}
@@ -404,6 +406,61 @@ export function CoachCard({ frame, entries, linePreview, onPlayLine, onStopLine 
         </div>
       )}
     </div>
+  )
+}
+
+// ---------- Explore: your own moves from a review position ----------
+
+/** A review-frame-shaped object for one explored move, so it renders in the same coach card. */
+export function exploreFrame(ply) {
+  return {
+    plyIndex: (ply.moveNumber - 1) * 2 + (ply.whiteMove ? 0 : 1),
+    moveNumber: ply.moveNumber,
+    whiteMove: ply.whiteMove,
+    san: ply.san,
+    qualityTag: ply.qualityTag,
+    explanation: ply.explanation,
+    opening: ply.opening,
+    playedMove: ply.uci,
+    bestMove: ply.bestMove,
+    bestMoveSan: ply.bestMoveSan,
+    bestLinePlies: ply.bestLinePlies,
+    deliveredMate: ply.deliveredMate,
+    gameEndMessage: ply.gameOver && !ply.deliveredMate ? ply.gameOver[0].toUpperCase() + ply.gameOver.slice(1) : null
+  }
+}
+
+export function exploreEvaluation(ply) {
+  return { pawns: ply.evalAfter, mate: ply.mateAfter, win: ply.winAfter, result: null }
+}
+
+export function ExplorePanel({ explore, baseLabel, busy, onSelect, onExit }) {
+  const current = explore.index >= 0 ? explore.plies[explore.index] : null
+  return (
+    <section className="explore-panel" aria-label="Your line">
+      <div className="explore-head">
+        <div>
+          <strong>Your line</strong>
+          <span>from {baseLabel}{busy ? ' · Stockfish is thinking…' : ''}</span>
+        </div>
+        <button type="button" className="line-action" onClick={onExit}>Back to review</button>
+      </div>
+      <div className="line-moves explore-moves">
+        <button type="button" className={`line-move ${explore.index < 0 ? 'current' : ''}`} onClick={() => onSelect(-1)}>Start</button>
+        {explore.plies.map((ply, index) => {
+          const meta = classMeta(ply.qualityTag)
+          const prefix = ply.whiteMove ? `${ply.moveNumber}.` : index === 0 ? `${ply.moveNumber}...` : ''
+          return (
+            <button key={`${ply.uci}-${index}`} type="button"
+              className={`line-move ${index === explore.index ? 'current' : ''}`} onClick={() => onSelect(index)}>
+              {prefix && <span className="line-number">{prefix}</span>}{ply.san}
+              {meta && <ClassIcon tag={ply.deliveredMate ? 'Best' : ply.qualityTag} size={14} className="inline-icon" />}
+            </button>
+          )
+        })}
+      </div>
+      {current && <CoachCard frame={exploreFrame(current)} entries={[]} evaluation={exploreEvaluation(current)} />}
+    </section>
   )
 }
 

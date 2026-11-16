@@ -18,6 +18,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 
@@ -257,6 +258,45 @@ class WebGameServiceTest {
         assertNotNull(second.analysisFrame().explanation());
         assertEquals(-1, service.jumpAnalysis(S1, -7).analysisFrame().plyIndex());
         assertEquals(1, service.jumpAnalysis(S1, 99).analysisFrame().plyIndex());
+    }
+
+    @Test
+    void exploreJudgesAnyMoveFromAReviewPositionWithoutTouchingTheReview() throws Exception {
+        service = newService(fakeEngine(0), 2);
+        service.move(S1, new MoveRequest(4, 6, 4, 4));
+        service.move(S1, new MoveRequest(4, 1, 4, 3));
+        service.analyze(S1);
+        waitFor(() -> "ready".equals(service.state(S1).analysisStatus()), "analysis finished");
+
+        String afterE4 = service.jumpAnalysis(S1, 0).analysisFrame().positionFen();
+        assertTrue(afterE4.startsWith("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b"), afterE4);
+
+        var legal = service.exploreLegal(S1, new WebGameService.ExploreRequest(afterE4, null));
+        assertEquals(20, legal.legalMoves().size());
+
+        // Black tries 1...c5 instead of the game's 1...e5.
+        WebGameService.ExploreView tried = service.explore(S1, new WebGameService.ExploreRequest(afterE4, "c7c5"));
+        assertEquals("c5", tried.san());
+        assertFalse(tried.whiteMove());
+        assertEquals(1, tried.moveNumber());
+        assertNotNull(tried.qualityTag());
+        assertNotNull(tried.explanation());
+        assertTrue(tried.fen().startsWith("rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w"), tried.fen());
+        assertEquals(30, tried.legalMoves().size());
+        assertSame(tried, service.explore(S1, new WebGameService.ExploreRequest(afterE4, "c7c5")), "cached");
+
+        // The review is untouched.
+        GameState review = service.state(S1);
+        assertTrue(review.analysisMode());
+        assertEquals(0, review.analysisFrame().plyIndex());
+        assertEquals(List.of("e2e4", "e7e5"), review.analysisEntries().stream().map(e -> e.playedMove()).toList());
+
+        assertThrows(IllegalArgumentException.class,
+            () -> service.explore(S1, new WebGameService.ExploreRequest(afterE4, "e2e4")), "White's move on Black's turn");
+        assertThrows(IllegalArgumentException.class,
+            () -> service.explore(S1, new WebGameService.ExploreRequest("not a fen", "e2e4")));
+        assertThrows(IllegalArgumentException.class,
+            () -> service.exploreLegal(S1, new WebGameService.ExploreRequest("8/8/8/8/8/8/8/8 w - - 0 1", null)), "no kings");
     }
 
     @Test

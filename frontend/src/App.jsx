@@ -2,8 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import axios from 'axios'
 import { PieceIcon, pieceFromSymbol } from './pieces.jsx'
 import {
-  AnalysisProgress, ClassIcon, CoachCard, EvalBar, EvalGraph, ReviewMoveList, ReviewNav, ReviewSummary,
-  classMeta, evalAtPly, findKeyMoment, piecesFromFen, uciSquares
+  AnalysisProgress, ClassIcon, CoachCard, EvalBar, EvalGraph, ExplorePanel, ReviewMoveList, ReviewNav, ReviewSummary,
+  classMeta, evalAtPly, exploreEvaluation, findKeyMoment, piecesFromFen, uciSquares
 } from './review.jsx'
 
 const files = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
@@ -30,6 +30,13 @@ function formatApiError(err) {
     return 'Cannot reach the Chess backend. Start Spring Boot on port 8081, then reload this page.'
   }
   return err.message
+}
+
+// Pieces after a simple from→to move, for showing an explored move before Stockfish has answered.
+function withMoveApplied(pieces, move) {
+  return (pieces ?? [])
+    .filter(piece => !(piece.col === move.toCol && piece.row === move.toRow))
+    .map(piece => (piece.col === move.fromCol && piece.row === move.fromRow ? { ...piece, col: move.toCol, row: move.toRow } : piece))
 }
 
 function sameMove(a, b) {
@@ -120,6 +127,13 @@ export default function App() {
   const [reviewStage, setReviewStage] = useState('summary')
   // Best line being played on the board: { plyIndex, index } (index into the frame's bestLinePlies).
   const [linePreview, setLinePreview] = useState(null)
+  // Explore: your own moves from a review position. { basePly, baseFen, plies: [explored move], index }
+  const [explore, setExplore] = useState(null)
+  // The explored move waiting for Stockfish, shown on the board right away: { fromCol, fromRow, toCol, toRow }
+  const [explorePending, setExplorePending] = useState(null)
+  // Legal moves (UCI) per FEN while exploring; positions repeat a lot when stepping back and forth.
+  const legalByFenRef = useRef(new Map())
+  const reviewScrollRef = useRef(null)
 
   const boardRef = useRef(null)
   const dragRef = useRef(null)
@@ -152,7 +166,15 @@ export default function App() {
   const reviewEntries = game?.analysisEntries ?? []
   const previewPlies = linePreview && reviewFrame?.plyIndex === linePreview.plyIndex ? reviewFrame.bestLinePlies ?? [] : []
   const previewPly = previewPlies[linePreview?.index ?? -1] ?? null
-  const boardPieces = previewPly ? piecesFromFen(previewPly.fen) : game?.pieces
+  const reviewPly = reviewFrame?.plyIndex ?? -1
+  const exploring = Boolean(reviewFrame && explore && explore.basePly === reviewPly)
+  const explorePly = exploring && explore.index >= 0 ? explore.plies[explore.index] : null
+  // In the move review the board is playable: the side to move in the shown position may try any move.
+  const reviewInteractive = Boolean(game?.analysisMode) && reviewStage === 'moves' && !previewPly
+  const interactiveFen = reviewInteractive ? (explorePly ? explorePly.fen : reviewFrame?.positionFen ?? null) : null
+  const interactiveTurn = interactiveFen ? (interactiveFen.split(' ')[1] === 'w' ? 'white' : 'black') : null
+  const positionPieces = previewPly ? piecesFromFen(previewPly.fen) : explorePly ? piecesFromFen(explorePly.fen) : game?.pieces
+  const boardPieces = explorePending ? withMoveApplied(positionPieces, explorePending) : positionPieces
 
   const piecesBySquare = useMemo(() => {
     const map = new Map()
@@ -165,7 +187,10 @@ export default function App() {
   const balance = materialBalance(game?.pieces)
   const whiteCaptures = splitCaptures(game?.capturedByWhite)
   const blackCaptures = splitCaptures(game?.capturedByBlack)
-  const lastMove = previewPly ? uciSquares(previewPly.uci) : game?.lastMove
+  const lastMove = previewPly ? uciSquares(previewPly.uci)
+    : explorePending ? explorePending
+    : explorePly ? uciSquares(explorePly.uci)
+    : game?.lastMove
   const disconnected = connectionError && !game
   const engineTurn = Boolean(game?.engineTurn)
   const engineUnavailable = Boolean(game && !game.humanVsHuman && !game.engineEnabled && game.active && !game.analysisMode)
@@ -179,10 +204,14 @@ export default function App() {
   const flipped = game?.analysisMode ? reviewFlipped : liveFlipped
   const analysisRunning = analyzing || game?.analysisStatus === 'running'
   const legalMoves = selected && sameSquare(legalFor.origin, selected) ? legalFor.moves : []
-  const reviewPly = reviewFrame?.plyIndex ?? -1
-  const reviewPlayedMove = reviewPly >= 0 && !previewPly ? uciSquares(reviewFrame.playedMove) : null
-  const reviewBestMove = reviewPly >= 0 && !previewPly ? uciSquares(reviewFrame.bestMove) : null
-  const reviewMeta = reviewFrame?.deliveredMate ? classMeta('Best') : classMeta(reviewFrame?.qualityTag)
+  // The move whose classification is shown on the board: the explored move, else the reviewed one.
+  const decorate = !previewPly && !explorePending
+  const reviewPlayedMove = !decorate ? null : explorePly ? uciSquares(explorePly.uci) : reviewPly >= 0 ? uciSquares(reviewFrame.playedMove) : null
+  const reviewBestMove = !decorate ? null : explorePly ? uciSquares(explorePly.bestMove) : reviewPly >= 0 ? uciSquares(reviewFrame.bestMove) : null
+  const badgeTag = explorePly
+    ? (explorePly.deliveredMate ? 'Best' : explorePly.qualityTag)
+    : (reviewFrame?.deliveredMate ? 'Best' : reviewFrame?.qualityTag)
+  const reviewMeta = classMeta(badgeTag)
   const showBestArrow = reviewBestMove && !sameMove(reviewBestMove, reviewPlayedMove)
   const nextPreviewPly = previewPlies[(linePreview?.index ?? -1) + 1] ?? null
   const reviewMovesStage = Boolean(game?.analysisMode) && reviewStage === 'moves'
@@ -208,21 +237,30 @@ export default function App() {
     dragRef.current = null
     setDragGhost(null)
     setPromotion(null)
-  }, [plyCount, game?.analysisMode, game?.active])
+  }, [plyCount, game?.analysisMode, game?.active, interactiveFen])
 
   // Entering review always opens the summary; leaving it clears any line preview.
   useEffect(() => {
     const inReviewNow = Boolean(game?.analysisMode)
     if (inReviewNow && !wasReviewRef.current) setReviewStage('summary')
-    if (!inReviewNow) setLinePreview(null)
+    if (!inReviewNow) {
+      setLinePreview(null)
+      setExplore(null)
+    }
     wasReviewRef.current = inReviewNow
   }, [game?.analysisMode])
 
   useEffect(() => {
     setLinePreview(null)
+    setExplore(null)
     // Once the server state has caught up with every request, key presses start from the shown ply again.
     if (navRef.current.inFlight === 0) navRef.current.target = null
   }, [reviewPly])
+
+  // Starting your own line brings its panel (line + verdict) into view.
+  useEffect(() => {
+    if (exploring) reviewScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' })
+  }, [exploring])
 
   useEffect(() => {
     function handleReviewKeys(event) {
@@ -251,6 +289,19 @@ export default function App() {
         return
       }
 
+      // While exploring your own line, the arrows walk through it; Escape returns to the review.
+      if (exploring) {
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          exitExplore()
+        } else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+          event.preventDefault()
+          const next = explore.index + (event.key === 'ArrowRight' ? 1 : -1)
+          setExplore({ ...explore, index: Math.max(-1, Math.min(explore.plies.length - 1, next)) })
+        }
+        return
+      }
+
       const total = game.analysisFrame?.totalPlies ?? 0
       const current = navRef.current.target ?? reviewPly
       let destination = null
@@ -268,7 +319,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleReviewKeys)
     return () => window.removeEventListener('keydown', handleReviewKeys)
-  }, [game?.analysisMode, reviewPly, reviewEntries, linePreview, previewPlies, pending, confirmHome, reviewStage, flipPrefs])
+  }, [game?.analysisMode, reviewPly, reviewEntries, linePreview, previewPlies, pending, confirmHome, reviewStage, flipPrefs, exploring, explore])
 
   async function refreshGame() {
     const tracker = mutationRef.current
@@ -320,6 +371,9 @@ export default function App() {
   }
 
   function canMovePiece(piece) {
+    if (reviewInteractive) {
+      return Boolean(piece && interactiveFen && !explorePending && !promotion && piece.color === interactiveTurn)
+    }
     const waitingForStart = game?.awaitingStart && !game?.humanVsHuman
     return Boolean(piece && game?.active && !pending && !promotion && !game?.analysisMode && !engineTurn && !waitingForStart && piece.color === game?.turn)
   }
@@ -386,8 +440,63 @@ export default function App() {
   }
 
   async function fetchLegalMoves(origin) {
+    if (reviewInteractive) return exploreLegalTargets(origin)
     const response = await axios.get('/api/game/legal', { params: { col: origin.col, row: origin.row } })
     return response.data
+  }
+
+  // Legal targets from one square in the shown review/explore position, in the server's {col,row,capture} shape.
+  async function exploreLegalTargets(origin) {
+    const fen = interactiveFen
+    let legal = legalByFenRef.current.get(fen)
+    if (!legal) {
+      const response = await axios.post('/api/game/explore/legal', { fen })
+      legal = response.data.legalMoves
+      legalByFenRef.current.set(fen, legal)
+    }
+    const from = squareName(origin.col, origin.row)
+    const mover = piecesBySquare.get(`${origin.col},${origin.row}`)
+    const seen = new Set()
+    return legal
+      .filter(uci => uci.startsWith(from))
+      .map(uci => uciSquares(uci))
+      .filter(move => move && !seen.has(`${move.toCol},${move.toRow}`) && seen.add(`${move.toCol},${move.toRow}`))
+      .map(move => ({
+        col: move.toCol,
+        row: move.toRow,
+        capture: piecesBySquare.has(`${move.toCol},${move.toRow}`) || (mover?.name === 'Pawn' && move.fromCol !== move.toCol)
+      }))
+  }
+
+  // Plays a move of your own from the shown review position; Stockfish judges it like a game move.
+  async function exploreMove(origin, target, promotionPiece) {
+    const fen = interactiveFen
+    if (!fen || !reviewFrame) return
+    const uci = `${squareName(origin.col, origin.row)}${squareName(target.col, target.row)}${promotionPiece ?? ''}`
+    const base = exploring ? explore : { basePly: reviewPly, baseFen: reviewFrame.positionFen, plies: [], index: -1 }
+    setPromotion(null)
+    clearSelection()
+    setExplorePending({ fromCol: origin.col, fromRow: origin.row, toCol: target.col, toRow: target.row })
+    try {
+      const response = await axios.post('/api/game/explore', { fen, move: uci })
+      const ply = response.data
+      legalByFenRef.current.set(ply.fen, ply.legalMoves)
+      setExplore(current => {
+        const from = current && current.basePly === base.basePly ? current : base
+        const plies = [...from.plies.slice(0, from.index + 1), ply]
+        return { ...from, plies, index: plies.length - 1 }
+      })
+      setError(null)
+    } catch (err) {
+      setError(formatApiError(err))
+    } finally {
+      setExplorePending(null)
+    }
+  }
+
+  function exitExplore() {
+    setExplore(null)
+    clearSelection()
   }
 
   async function selectPiece(piece) {
@@ -433,6 +542,10 @@ export default function App() {
   }
 
   async function submitMove(origin, target, promotionPiece) {
+    if (reviewInteractive) {
+      exploreMove(origin, target, promotionPiece)
+      return
+    }
     const scrollPosition = { left: window.scrollX, top: window.scrollY }
     setPending(true)
     setPromotion(null)
@@ -456,8 +569,12 @@ export default function App() {
 
   function handleSquareClick(col, row) {
     if (suppressClickRef.current) return
-    if (pending || promotion || !game?.active || engineTurn || game?.analysisMode) return
-    if (game?.awaitingStart && !game?.humanVsHuman) return
+    if (reviewInteractive) {
+      if (pending || promotion || explorePending) return
+    } else {
+      if (pending || promotion || !game?.active || engineTurn || game?.analysisMode) return
+      if (game?.awaitingStart && !game?.humanVsHuman) return
+    }
 
     const target = { col, row }
     const piece = piecesBySquare.get(`${col},${row}`)
@@ -684,6 +801,8 @@ export default function App() {
   )
   const reviewHeadline = reviewStage === 'summary'
     ? 'Game review'
+    : explorePly
+      ? `Your line · ${explorePly.moveNumber}${explorePly.whiteMove ? '.' : '...'} ${explorePly.san}`
     : reviewFrame?.plyIndex >= 0
       ? `${reviewFrame.moveNumber}${reviewFrame.whiteMove ? '.' : '...'} ${reviewFrame.san}${reviewFrame.gameEndMessage ? ` · ${reviewFrame.gameEndMessage}` : ''}`
       : 'Starting position'
@@ -708,7 +827,14 @@ export default function App() {
   ].join(' · ')
   const analysisNotice = !inReview && game?.analysisStatus === 'failed' ? (game.analysisReport ?? [])[0] : null
   const showProgress = !inReview && game?.analysisStatus === 'running'
-  const reviewEval = evalAtPly(reviewEntries, reviewPly)
+  const reviewEval = explorePly
+    ? (explorePly.deliveredMate
+      ? { pawns: 0, mate: null, win: explorePly.whiteMove ? 100 : 0, result: explorePly.whiteMove ? '1-0' : '0-1' }
+      : exploreEvaluation(explorePly))
+    : evalAtPly(reviewEntries, reviewPly)
+  const reviewMoveLabel = reviewPly >= 0 && reviewFrame
+    ? `${reviewFrame.moveNumber}${reviewFrame.whiteMove ? '.' : '...'} ${reviewFrame.san}`
+    : 'the starting position'
 
   return (
     <main className="app-shell">
@@ -727,13 +853,19 @@ export default function App() {
 
           {inReview && reviewEval && (
             <EvalBar
-              evaluation={reviewFrame?.deliveredMate
+              evaluation={!explorePly && reviewFrame?.deliveredMate
                 ? { ...reviewEval, win: reviewFrame.whiteMove ? 100 : 0, result: reviewFrame.whiteMove ? '1-0' : '0-1' }
                 : reviewEval}
               flipped={flipped}
             />
           )}
           <div className="board-frame">
+            {exploring && !previewPly && (
+              <div className="line-banner explore" role="status">
+                <span>{explorePending ? 'Stockfish is thinking…' : `Your line · ${explore.index + 1}/${explore.plies.length}`}</span>
+                <button type="button" onClick={exitExplore}>Back to review ✕</button>
+              </div>
+            )}
             {previewPly && (
               <div className="line-banner" role="status">
                 <span>Best line · {linePreview.index + 1}/{previewPlies.length}</span>
@@ -783,7 +915,7 @@ export default function App() {
                     {displayRow === 7 && <span className="file-label">{files[col]}</span>}
                     {reviewBadgeHere && (
                       <span className="review-badge">
-                        <ClassIcon tag={reviewFrame.deliveredMate ? 'Best' : reviewFrame.qualityTag} size={28} />
+                        <ClassIcon tag={badgeTag} size={28} />
                       </span>
                     )}
                     {piece && (
@@ -884,14 +1016,31 @@ export default function App() {
                 </div>
               ) : (
                 <>
-                  <div className="review-scroll">
-                    <CoachCard
-                      frame={reviewFrame}
-                      entries={reviewEntries}
-                      linePreview={previewPly ? linePreview : null}
-                      onPlayLine={playLine}
-                      onStopLine={() => setLinePreview(null)}
-                    />
+                  <div className="review-scroll" ref={reviewScrollRef}>
+                    {exploring ? (
+                      <ExplorePanel
+                        explore={explore}
+                        baseLabel={reviewMoveLabel}
+                        busy={Boolean(explorePending)}
+                        onSelect={index => { clearSelection(); setExplore({ ...explore, index }) }}
+                        onExit={exitExplore}
+                      />
+                    ) : (
+                      <>
+                        <CoachCard
+                          frame={reviewFrame}
+                          entries={reviewEntries}
+                          linePreview={previewPly ? linePreview : null}
+                          onPlayLine={playLine}
+                          onStopLine={() => setLinePreview(null)}
+                        />
+                        {reviewFrame?.positionFen && !previewPly && (
+                          <p className="explore-hint">
+                            {explorePending ? 'Stockfish is thinking…' : 'Try your own idea: move a piece on the board and Stockfish judges it.'}
+                          </p>
+                        )}
+                      </>
+                    )}
                     <EvalGraph entries={reviewEntries} currentPly={reviewPly} onSelect={gotoPly} />
                     <ReviewMoveList entries={reviewEntries} currentPly={reviewPly} onSelect={gotoPly} />
                   </div>

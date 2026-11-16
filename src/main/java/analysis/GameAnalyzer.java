@@ -219,6 +219,58 @@ public class GameAnalyzer {
         return summary;
     }
 
+    /**
+     * One move tried from an arbitrary position (review "explore" mode), judged exactly like a game move.
+     *
+     * @param entry     the move's classification, explanation and best alternative (from the position before it)
+     * @param fenAfter  the position after the move
+     * @param replyLine the engine's best line from the position after the move (UCI)
+     * @param legalMoves legal moves in the position after the move (UCI)
+     * @param whitePawnsAfter / whiteMateAfter / whiteWinAfter  evaluation after the move, White's perspective
+     */
+    public record Exploration(Entry entry, String fenAfter, List<String> replyLine, List<String> legalMoves,
+                              double whitePawnsAfter, Integer whiteMateAfter, double whiteWinAfter) {}
+
+    /** Plays {@code uciMove} from {@code fen} and classifies it with the same rules as a reviewed game move. */
+    public Exploration explore(String fen, String uciMove) throws IOException {
+        Board before = new Board();
+        before.loadFromFen(fen);
+        Move move = Tactics.parseLegal(before, uciMove);
+        if (move == null) {
+            throw new IllegalArgumentException("Illegal move: " + uciMove);
+        }
+        Board after = before.clone();
+        after.doMove(move);
+        Side mover = before.getSideToMove();
+        int ply = (before.getMoveCounter() - 1) * 2 + (mover == Side.BLACK ? 1 : 0);
+        OpeningBook book = OpeningBook.standard();
+        boolean inBook = book.isBook(after) && (book.isBook(before) || ply == 0);
+        OpeningBook.Opening opening = inBook ? book.opening(after) : null;
+
+        try (StockfishClient client = new StockfishClient(enginePath)) {
+            client.configureForAnalysis(multiPv, HASH_MB);
+            client.newGame();
+            PositionEval evalBefore = evaluateFen(client, before);
+            PositionEval evalAfter = evaluateFen(client, after);
+            Entry entry = buildEntry(ply, mover, uciMove, move, Tactics.toSan(before, uciMove), before, after,
+                evalBefore, evalAfter, inBook, opening == null ? null : opening.name(), null, false);
+            List<String> legal = after.legalMoves().stream().map(Object::toString).toList();
+            return new Exploration(entry, after.getFen(), evalAfter.top() == null ? List.of() : limit(evalAfter.top().pv, MAX_LINE_PLIES),
+                legal, evalAfter.whitePawns(), evalAfter.whiteMate(), evalAfter.whiteWin());
+        }
+    }
+
+    private PositionEval evaluateFen(StockfishClient client, Board board) throws IOException {
+        Side stm = board.getSideToMove();
+        if (board.isMated()) {
+            return new PositionEval(stm, List.of(), true, false);
+        }
+        if (board.isStaleMate() || board.isInsufficientMaterial()) {
+            return new PositionEval(stm, List.of(), false, true);
+        }
+        return new PositionEval(stm, client.analyzeFen(board.getFen(), depth), false, false);
+    }
+
     /** A searched (or terminal) position. Lines are from the side to move's perspective, best first. */
     record PositionEval(Side sideToMove, List<StockfishClient.Line> lines, boolean mated, boolean drawn) {
 

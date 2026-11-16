@@ -1779,6 +1779,67 @@ button.review-move:hover {
   font-weight: 600;
 }
 
+/* ---------- Explore: your own line from a review position ---------- */
+
+.explore-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.explore-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.explore-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.explore-head div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.explore-head strong {
+  color: var(--text-strong);
+  font-size: 15px;
+}
+
+.explore-head span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.explore-moves {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--field);
+}
+
+.line-move {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.line-move.static {
+  cursor: default;
+}
+
+.line-move.static:hover {
+  background: transparent;
+}
+
+.line-banner.explore button {
+  background: #749bbf;
+}
+
 /* ---------- Review navigation ---------- */
 
 .review-nav {
