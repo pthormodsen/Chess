@@ -993,7 +993,7 @@ button:focus-visible {
 
 .quiet-actions {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 4px;
 }
 
@@ -1138,8 +1138,26 @@ button:focus-visible {
   color: var(--text-strong);
 }
 
-.review-head .quiet-action {
+.review-head .icon-action {
   margin-left: auto;
+}
+
+.icon-action {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  background: var(--field);
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.icon-action:hover {
+  background: var(--panel-raised);
+  color: var(--text-strong);
 }
 
 .review-scroll {

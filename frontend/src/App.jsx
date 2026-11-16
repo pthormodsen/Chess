@@ -36,6 +36,26 @@ function sameMove(a, b) {
   return a && b && a.fromCol === b.fromCol && a.fromRow === b.fromRow && a.toCol === b.toCol && a.toRow === b.toRow
 }
 
+const FLIP_KEY = 'chess.boardFlip'
+
+// The player's "flip board" choice per view, remembered across reloads (per browser).
+function readFlipPrefs() {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(FLIP_KEY) ?? '{}')
+    return { live: stored.live === true, review: stored.review === true }
+  } catch (ignored) {
+    return { live: false, review: false }
+  }
+}
+
+function writeFlipPrefs(prefs) {
+  try {
+    window.localStorage.setItem(FLIP_KEY, JSON.stringify(prefs))
+  } catch (ignored) {
+    // Storage blocked: the flip still applies for this page view.
+  }
+}
+
 const SESSION_KEY = 'chess.sessionId'
 let memorySessionId = null
 
@@ -150,8 +170,13 @@ export default function App() {
   const engineTurn = Boolean(game?.engineTurn)
   const engineUnavailable = Boolean(game && !game.humanVsHuman && !game.engineEnabled && game.active && !game.analysisMode)
   // Stockfish games: fixed orientation from "Play as". Local games: the side to move sits at the bottom.
-  const desiredFlip = game ? (game.humanVsHuman ? game.turn === 'black' : Boolean(game.enginePlaysWhite)) : false
-  const [flipped, setFlipped] = useState(false)
+  const [flipPrefs, setFlipPrefs] = useState(readFlipPrefs)
+  // Live: the side to move in local games, your side vs Stockfish; the flip button inverts that.
+  const desiredFlip = (game ? (game.humanVsHuman ? game.turn === 'black' : Boolean(game.enginePlaysWhite)) : false) !== flipPrefs.live
+  const [liveFlipped, setLiveFlipped] = useState(false)
+  // Review: never depends on whose turn it was. White at the bottom, or your side when you played Stockfish.
+  const reviewFlipped = (Boolean(game && !game.humanVsHuman && game.enginePlaysWhite)) !== flipPrefs.review
+  const flipped = game?.analysisMode ? reviewFlipped : liveFlipped
   const analysisRunning = analyzing || game?.analysisStatus === 'running'
   const legalMoves = selected && sameSquare(legalFor.origin, selected) ? legalFor.moves : []
   const reviewPly = reviewFrame?.plyIndex ?? -1
@@ -169,11 +194,11 @@ export default function App() {
   if (game?.analysisMode || dragGhost || promotion) return
 
   if (!game?.humanVsHuman) {
-    setFlipped(desiredFlip)
+    setLiveFlipped(desiredFlip)
     return
   }
 
-  const timer = window.setTimeout(() => setFlipped(desiredFlip), 250)
+  const timer = window.setTimeout(() => setLiveFlipped(desiredFlip), 250)
   return () => window.clearTimeout(timer)
 }, [desiredFlip, game?.humanVsHuman, game?.analysisMode, dragGhost, promotion])
 
@@ -205,6 +230,11 @@ export default function App() {
       const tagName = target?.tagName?.toLowerCase()
       const isTyping = tagName === 'input' || tagName === 'select' || tagName === 'textarea' || target?.isContentEditable
       if (!game?.analysisMode || pending || isTyping || confirmHome || event.altKey || event.metaKey || event.ctrlKey) return
+      if (event.key === 'f' || event.key === 'F') {
+        event.preventDefault()
+        toggleFlip()
+        return
+      }
 
       // While a best line is on the board, the arrows walk through that line instead.
       if (linePreview && previewPlies.length) {
@@ -238,7 +268,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleReviewKeys)
     return () => window.removeEventListener('keydown', handleReviewKeys)
-  }, [game?.analysisMode, reviewPly, reviewEntries, linePreview, previewPlies, pending, confirmHome, reviewStage])
+  }, [game?.analysisMode, reviewPly, reviewEntries, linePreview, previewPlies, pending, confirmHome, reviewStage, flipPrefs])
 
   async function refreshGame() {
     const tracker = mutationRef.current
@@ -607,6 +637,15 @@ export default function App() {
     }
   }
 
+  function toggleFlip() {
+    const view = game?.analysisMode ? 'review' : 'live'
+    setFlipPrefs(prev => {
+      const next = { ...prev, [view]: !prev[view] }
+      writeFlipPrefs(next)
+      return next
+    })
+  }
+
   function playLine(index) {
     if (!reviewFrame?.bestLinePlies?.length) return
     setLinePreview({ plyIndex: reviewFrame.plyIndex, index })
@@ -830,6 +869,7 @@ export default function App() {
                   <button type="button" role="tab" aria-selected={reviewStage === 'moves'}
                     className={reviewStage === 'moves' ? 'active' : ''} onClick={() => setReviewStage('moves')}>Moves</button>
                 </div>
+                <button type="button" className="icon-action" onClick={toggleFlip} aria-label="Flip board (F)" title="Flip board (F)">⇅</button>
                 <button type="button" className="quiet-action" onClick={exitAnalysis}>Exit review</button>
               </div>
 
@@ -985,6 +1025,7 @@ export default function App() {
                     {analysisRunning ? 'Analyzing…' : 'Analyze'}
                   </button>
                   <button type="button" className="quiet-action" onClick={copyPgn}>{copyLabel}</button>
+                  <button type="button" className="quiet-action" onClick={toggleFlip} aria-label="Flip board" title="Flip board">⇅ Flip</button>
                   <button type="button" className={`quiet-action ${showImport ? 'active' : ''}`} onClick={() => setShowImport(value => !value)}>
                     Import PGN
                   </button>
