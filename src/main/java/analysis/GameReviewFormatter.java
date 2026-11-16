@@ -23,10 +23,8 @@ public final class GameReviewFormatter {
             lines.add("Result: " + gameEndMessage);
         }
         lines.add("Accuracy: White " + fmt(summary.whiteAccuracy) + "% | Black " + fmt(summary.blackAccuracy) + "%");
-        lines.add("White: Best " + summary.white.best + ", Inaccuracies " + summary.white.inaccuracies
-            + ", Mistakes " + summary.white.mistakes + ", Blunders " + summary.white.blunders);
-        lines.add("Black: Best " + summary.black.best + ", Inaccuracies " + summary.black.inaccuracies
-            + ", Mistakes " + summary.black.mistakes + ", Blunders " + summary.black.blunders);
+        lines.add("White: " + countsLine(summary.white));
+        lines.add("Black: " + countsLine(summary.black));
         lines.add("Avg loss: " + fmt(summary.avgLoss) + " pawns | Max loss: " + fmt(summary.maxLoss));
         lines.add("---");
 
@@ -36,10 +34,19 @@ public final class GameReviewFormatter {
             String moveLabel = buildMoveLabel(i, entry, sanMoves);
             StringBuilder sb = new StringBuilder();
             sb.append(moveLabel).append(" → ").append(labelFor(entry.qualityTag));
-            sb.append(" (loss ").append(fmt(entry.loss)).append(")");
-            sb.append(" | Best: ").append(entry.bestMove == null ? "n/a" : entry.bestMove);
-            if (!entry.bestLine.isEmpty()) {
-                sb.append(" | Line: ").append(String.join(" ", limitPv(entry.bestLine, 6)));
+            if (!Double.isNaN(entry.winLoss)) {
+                sb.append(" (-").append(String.format("%.1f", entry.winLoss)).append("% win)");
+            } else {
+                sb.append(" (loss ").append(fmt(entry.loss)).append(")");
+            }
+            String best = entry.bestMoveSan != null ? entry.bestMoveSan : entry.bestMove;
+            sb.append(" | Best: ").append(best == null ? "n/a" : best);
+            List<String> line = entry.bestLineSan.isEmpty() ? entry.bestLine : entry.bestLineSan;
+            if (!line.isEmpty()) {
+                sb.append(" | Line: ").append(String.join(" ", limitPv(line, 6)));
+            }
+            if (entry.explanation != null) {
+                sb.append(" | ").append(entry.explanation);
             }
             lines.add(sb.toString());
         }
@@ -47,6 +54,16 @@ public final class GameReviewFormatter {
             lines.add("No moves to analyze.");
         }
         return lines;
+    }
+
+    private static String countsLine(GameAnalyzer.SideSummary side) {
+        List<String> parts = new ArrayList<>();
+        side.counts.forEach((tag, count) -> {
+            if (count > 0) {
+                parts.add(tag + " " + count);
+            }
+        });
+        return parts.isEmpty() ? "no moves" : String.join(", ", parts);
     }
 
     private static String buildMoveLabel(int plyIndex, GameAnalyzer.Entry entry, List<String> sanMoves) {
@@ -81,14 +98,18 @@ public final class GameReviewFormatter {
                 return "👍 Excellent";
             case "Good":
                 return "🙂 Good";
+            case "Book":
+                return "📖 Book";
             case "Inaccuracy":
                 return "?! Inaccuracy";
             case "Mistake":
-                return "?? Mistake";
+                return "? Mistake";
+            case "Miss":
+                return "✖ Miss";
             case "Severe Mistake":
                 return "☡ Severe mistake";
             case "Blunder":
-                return "☠ Blunder (lost ≥7 pawns)";
+                return "?? Blunder";
             case "Mate":
                 return "♛ Forced Mate";
             default:

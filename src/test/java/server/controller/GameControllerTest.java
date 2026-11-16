@@ -69,6 +69,37 @@ class GameControllerTest {
     }
 
     @Test
+    void gotoOutsideReviewIsAConflict() throws Exception {
+        mvc.perform(post("/api/game/analysis/goto").header("X-Chess-Session", SESSION)
+                .contentType(MediaType.APPLICATION_JSON).content("{\"ply\":3}"))
+            .andExpect(status().isConflict())
+            .andExpect(jsonPath("$.error").exists());
+    }
+
+    @Test
+    void exploreValidatesPositionsAndMoves() throws Exception {
+        String afterE4 = "{\"fen\":\"rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1\"";
+        mvc.perform(post("/api/game/explore/legal").header("X-Chess-Session", SESSION)
+                .contentType(MediaType.APPLICATION_JSON).content(afterE4 + "}"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.legalMoves.length()").value(20));
+        mvc.perform(post("/api/game/explore/legal").header("X-Chess-Session", SESSION)
+                .contentType(MediaType.APPLICATION_JSON).content("{\"fen\":\"rm -rf /\"}"))
+            .andExpect(status().isBadRequest())
+            .andExpect(jsonPath("$.error").exists());
+        mvc.perform(post("/api/game/explore").header("X-Chess-Session", SESSION)
+                .contentType(MediaType.APPLICATION_JSON).content(afterE4 + ",\"move\":\"e2e4\"}"))
+            .andExpect(status().isBadRequest());
+        // No engine configured in this test context: a legal move is a clean 503, not a crash.
+        mvc.perform(post("/api/game/explore").header("X-Chess-Session", SESSION)
+                .contentType(MediaType.APPLICATION_JSON).content(afterE4 + ",\"move\":\"c7c5\"}"))
+            .andExpect(status().isServiceUnavailable())
+            .andExpect(jsonPath("$.error").exists());
+        mvc.perform(post("/api/game/explore/legal").contentType(MediaType.APPLICATION_JSON).content(afterE4 + "}"))
+            .andExpect(status().isBadRequest());
+    }
+
+    @Test
     void analyzeWithoutEngineReturnsImmediately() throws Exception {
         mvc.perform(post("/api/game/analyze").header("X-Chess-Session", SESSION))
             .andExpect(status().isOk())

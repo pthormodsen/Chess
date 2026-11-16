@@ -97,6 +97,29 @@ public class GameController {
         return gameService.stepAnalysis(sessionId, 1);
     }
 
+    /** Jumps the review to a ply; -1 is the starting position. */
+    @PostMapping("/analysis/goto")
+    public GameState gotoAnalysisMove(@RequestHeader(value = "X-Chess-Session", required = false) String sessionId,
+                                      @RequestBody AnalysisGotoRequest request) {
+        return gameService.jumpAnalysis(sessionId, request == null ? -1 : request.ply());
+    }
+
+    public record AnalysisGotoRequest(int ply) {}
+
+    /** Legal moves for a position (FEN), for trying moves during review. */
+    @PostMapping("/explore/legal")
+    public WebGameService.ExploreLegalView exploreLegal(@RequestHeader(value = "X-Chess-Session", required = false) String sessionId,
+                                                        @RequestBody WebGameService.ExploreRequest request) {
+        return gameService.exploreLegal(sessionId, request);
+    }
+
+    /** Plays one move from a position (FEN) and judges it like a reviewed move; the review itself is untouched. */
+    @PostMapping("/explore")
+    public WebGameService.ExploreView explore(@RequestHeader(value = "X-Chess-Session", required = false) String sessionId,
+                                              @RequestBody WebGameService.ExploreRequest request) {
+        return gameService.explore(sessionId, request);
+    }
+
     @PostMapping("/analysis/exit")
     public GameState exitAnalysis(@RequestHeader(value = "X-Chess-Session", required = false) String sessionId) {
         return gameService.exitAnalysis(sessionId);

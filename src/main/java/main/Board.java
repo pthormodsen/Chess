@@ -67,6 +67,10 @@ public class Board extends JPanel {
     // Bumped whenever a pending engine/analysis result must be ignored (new game, side change, shutdown, ...).
     private long engineRequestId = 0L;
     private long analysisRequestId = 0L;
+    // Game review search settings (fixed depth => reproducible results) and an optional shared result cache.
+    private int analysisDepth = 16;
+    private int analysisMultiPv = GameAnalyzer.DEFAULT_MULTI_PV;
+    private GameAnalyzer.ResultCache analysisCache;
     // While held (server setup phase), configuration changes never trigger an engine move.
     private boolean engineOnHold = false;
     // Server mode: no eager Stockfish, no Swing clock timer, async results applied via callbackExecutor instead of the EDT.
@@ -83,6 +87,8 @@ public class Board extends JPanel {
     private long lastClockUpdateMillis = 0L;
     private javax.swing.Timer clockTimer;
     private boolean clockStarted = false;
+    // Untimed games (e.g. imported PGNs): the clock never starts, so no time is charged and nobody flags.
+    private boolean untimed = false;
     private String lastResultTag = "*";
     // Why the game ended, decided by board rules / clocks (never by engine evaluation). Null while the game is running.
     private GameEndReason gameEndReason;
@@ -348,6 +354,7 @@ public class Board extends JPanel {
     }
 
     public void startNewGame(){
+        untimed = false;
         clearAnalysisReview();
         gameEndReason = null;
         gameEndMessage = null;
@@ -377,6 +384,20 @@ public class Board extends JPanel {
         }
         notifyEvaluation();
         repaint();
+    }
+
+    /**
+     * A fresh game without a clock, used for replaying imported games: moves are recorded as usual,
+     * but neither clock starts or runs, in live play or in review. {@link #startNewGame()} is timed again.
+     */
+    public synchronized void startUntimedGame(){
+        startNewGame();
+        untimed = true;
+        notifyClock();
+    }
+
+    public synchronized boolean isUntimed(){
+        return untimed;
     }
 
     public void enableManualSetup(){
@@ -1031,23 +1052,27 @@ public class Board extends JPanel {
         }
         switch (tag){
             case "Brilliant":
-                return new Color(0, 191, 255, 220);
+                return new Color(38, 194, 163, 220);
             case "Great":
-                return new Color(42, 199, 183, 210);
+                return new Color(116, 155, 191, 210);
             case "Best":
-                return new Color(69, 184, 84, 210);
+                return new Color(129, 182, 76, 210);
             case "Excellent":
-                return new Color(116, 191, 67, 210);
+                return new Color(129, 182, 76, 210);
             case "Good":
-                return new Color(102, 178, 255, 210);
+                return new Color(149, 183, 118, 210);
             case "Inaccuracy":
-                return new Color(224, 207, 53, 210);
+                return new Color(247, 192, 69, 210);
             case "Mistake":
-                return new Color(236, 151, 31, 210);
+                return new Color(255, 167, 89, 210);
             case "Severe Mistake":
                 return new Color(217, 95, 14, 210);
             case "Blunder":
                 return new Color(212, 63, 58, 210);
+            case "Book":
+                return new Color(168, 136, 101, 210);
+            case "Miss":
+                return new Color(255, 119, 105, 210);
             case "Mate":
                 return new Color(186, 85, 211, 220);
             default:
@@ -1264,20 +1289,24 @@ public class Board extends JPanel {
         if(engineBinaryPath != null){
             return engineBinaryPath;
         }
+        engineBinaryPath = configuredEnginePath();
+        return engineBinaryPath;
+    }
+
+    /** Stockfish from the STOCKFISH_PATH env var, else the stockfish.path property; null if unset or missing. */
+    public static Path configuredEnginePath(){
         String configuredPath = System.getenv("STOCKFISH_PATH");
-        if(configuredPath == null){
+        if(configuredPath == null || configuredPath.isBlank()){
             configuredPath = System.getProperty("stockfish.path");
         }
-        if(configuredPath == null){
+        if(configuredPath == null || configuredPath.isBlank()){
             return null;
         }
-
         Path enginePath = Paths.get(configuredPath);
         if(!Files.exists(enginePath)){
             System.err.println("Stockfish engine not found at " + enginePath.toAbsolutePath());
             return null;
         }
-        engineBinaryPath = enginePath;
         return enginePath;
     }
 
@@ -2090,6 +2119,40 @@ public class Board extends JPanel {
     }
 
     public void analyzeGame(java.util.function.Consumer<java.util.List<String>> consumer){
+        analyzeGame(consumer, null);
+    }
+
+    /** Progress of a running review: moves classified so far (results fill in as they arrive). */
+    public static final class AnalysisProgress {
+        public final int done;
+        public final int total;
+        public final java.util.List<GameAnalyzer.Entry> entries;
+
+        public AnalysisProgress(int done, int total, java.util.List<GameAnalyzer.Entry> entries) {
+            this.done = done;
+            this.total = total;
+            this.entries = entries;
+        }
+    }
+
+    public void setAnalysisDepth(int depth){
+        this.analysisDepth = Math.max(1, Math.min(30, depth));
+    }
+
+    public void setAnalysisMultiPv(int multiPv){
+        this.analysisMultiPv = Math.max(1, Math.min(5, multiPv));
+    }
+
+    public void setAnalysisCache(GameAnalyzer.ResultCache cache){
+        this.analysisCache = cache;
+    }
+
+    /**
+     * Reviews the game in the background. {@code progress} (optional) receives every classified move as it
+     * arrives; {@code consumer} receives the final report. Both run through the callback executor.
+     */
+    public void analyzeGame(java.util.function.Consumer<java.util.List<String>> consumer,
+                            java.util.function.Consumer<AnalysisProgress> progress){
         if(analysisMode){
             restoreLiveGameState();
         }
@@ -2100,14 +2163,24 @@ public class Board extends JPanel {
         }
         final long requestId = ++analysisRequestId;
         final String endMessage = gameEndMessage;
+        final int depth = analysisDepth;
+        final int multiPv = analysisMultiPv;
+        final GameAnalyzer.ResultCache cache = analysisCache;
         List<String> movesCopy = new ArrayList<>(moveHistory);
         List<String> sanCopy = new ArrayList<>(sanHistory);
         analysisExecutor.submit(() -> {
             GameAnalyzer.Summary summary = null;
             List<String> report;
             try{
-                GameAnalyzer analyzer = new GameAnalyzer(enginePath, Duration.ofMillis(800));
-                summary = analyzer.analyze(movesCopy);
+                GameAnalyzer analyzer = new GameAnalyzer(enginePath, depth, multiPv).withCache(cache);
+                summary = analyzer.analyze(movesCopy, progress == null ? null : (done, total, entries) ->
+                    callbackExecutor.execute(() -> {
+                        synchronized (this) {
+                            if(requestId == analysisRequestId){
+                                progress.accept(new AnalysisProgress(done, total, entries));
+                            }
+                        }
+                    }));
                 report = GameReviewFormatter.buildReport(summary, sanCopy, endMessage);
             } catch (Exception e){
                 report = java.util.List.of("Analysis failed: " + e.getMessage());
@@ -2162,7 +2235,7 @@ public class Board extends JPanel {
     }
 
     private void startClock(){
-        if(clockStarted){
+        if(clockStarted || untimed){
             return;
         }
         clockStarted = true;
@@ -2186,7 +2259,7 @@ public class Board extends JPanel {
     }
 
     private synchronized void settleClock(){
-        if(!isGameActive || isGameOver){
+        if(!isGameActive || isGameOver || untimed){
             lastClockUpdateMillis = 0L;
             return;
         }
@@ -2339,6 +2412,14 @@ public class Board extends JPanel {
         rebuildDisplayMovesForPointer();
         notifyAnalysisFrame();
         repaint();
+    }
+
+    /** Jumps the review to a ply (-1 = starting position); out-of-range values are clamped. */
+    public void jumpToAnalysisPly(int ply){
+        if(!analysisMode || analysisSnapshots.isEmpty()){
+            return;
+        }
+        stepAnalysis(ply - analysisPointer);
     }
 
     public static final class AnalysisFrame {

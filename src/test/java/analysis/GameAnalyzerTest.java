@@ -1,15 +1,71 @@
 package analysis;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import support.FakeUciEngine;
+
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 
 import java.util.List;
 
 import uci.StockfishClient;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class GameAnalyzerTest {
+
+    @TempDir
+    Path tempDir;
+
+    @Test
+    void reportsEveryMoveAsItIsClassifiedAndCachesTheResult() throws Exception {
+        Path engine = FakeUciEngine.write(tempDir, "cp 20", "e2e4");
+        Map<String, GameAnalyzer.Summary> store = new HashMap<>();
+        GameAnalyzer.ResultCache cache = new GameAnalyzer.ResultCache() {
+            public GameAnalyzer.Summary get(String key) { return store.get(key); }
+            public void put(String key, GameAnalyzer.Summary summary) { store.put(key, summary); }
+        };
+        List<String> moves = List.of("e2e4", "e7e5", "g1f3", "a7a5");
+        List<Integer> progress = new ArrayList<>();
+
+        GameAnalyzer.Summary summary = new GameAnalyzer(engine, 6, 2).withCache(cache)
+            .analyze(moves, (done, total, entries) -> {
+                assertEquals(4, total);
+                assertEquals(done, entries.size());
+                progress.add(done);
+            });
+
+        assertEquals(List.of(1, 2, 3, 4), progress);
+        assertEquals("e4", summary.entries.get(0).san);
+        assertEquals("Book", summary.entries.get(0).qualityTag);
+        assertEquals("Book", summary.entries.get(2).qualityTag);
+        assertTrue(summary.entries.get(3).fenBefore.startsWith("rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b"));
+        assertNotNull(summary.openingName);
+        assertEquals(2, summary.white.counts.get("Book"));
+
+        // A second request for the same game never starts the engine (this path does not exist).
+        GameAnalyzer.Summary cached = new GameAnalyzer(Path.of("/nonexistent/stockfish"), 6, 2).withCache(cache).analyze(moves);
+        assertSame(summary, cached);
+    }
+
+    @Test
+    void mateScoresAreNotFlattenedIntoCentipawns() throws Exception {
+        // Every position: side to move mates in 2. White's win chance is 100 / 0, never a "+100 pawns" guess.
+        Path engine = FakeUciEngine.write(tempDir, "mate 2", "e2e4");
+        GameAnalyzer.Summary summary = new GameAnalyzer(engine, 6, 1).analyze(List.of("e2e4"));
+        GameAnalyzer.Entry entry = summary.entries.get(0);
+
+        assertEquals(2, entry.mateBefore);
+        assertEquals(-2, entry.mateAfter);
+        assertEquals(100.0, entry.winBefore);
+        assertEquals(0.0, entry.winAfter);
+    }
 
     @Test
     void blackToMoveLosingScoreConvertsToWhiteAdvantage() {

@@ -18,6 +18,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 
@@ -236,6 +237,80 @@ class WebGameServiceTest {
     }
 
     @Test
+    void reviewReportsProgressAndJumpsToAnyPly() throws Exception {
+        service = newService(fakeEngine(0), 2);
+        service.move(S1, new MoveRequest(4, 6, 4, 4));
+        service.move(S1, new MoveRequest(4, 1, 4, 3));
+        assertThrows(ConflictException.class, () -> service.jumpAnalysis(S1, 0), "no review yet");
+
+        service.analyze(S1);
+        waitFor(() -> "ready".equals(service.state(S1).analysisStatus()), "analysis finished");
+
+        GameState done = service.state(S1);
+        assertEquals(new WebGameService.AnalysisProgressView(2, 2), done.analysisProgress());
+        assertEquals("e4", done.analysisEntries().get(0).san());
+        assertEquals("Book", done.analysisEntries().get(0).qualityTag());
+        assertEquals(-1, done.analysisFrame().plyIndex(), "review opens on the summary / start position");
+
+        GameState second = service.jumpAnalysis(S1, 1);
+        assertEquals(1, second.analysisFrame().plyIndex());
+        assertEquals("e5", second.analysisFrame().san());
+        assertNotNull(second.analysisFrame().explanation());
+        assertEquals(-1, service.jumpAnalysis(S1, -7).analysisFrame().plyIndex());
+        assertEquals(1, service.jumpAnalysis(S1, 99).analysisFrame().plyIndex());
+    }
+
+    @Test
+    void exploreJudgesAnyMoveFromAReviewPositionWithoutTouchingTheReview() throws Exception {
+        service = newService(fakeEngine(0), 2);
+        service.move(S1, new MoveRequest(4, 6, 4, 4));
+        service.move(S1, new MoveRequest(4, 1, 4, 3));
+        service.analyze(S1);
+        waitFor(() -> "ready".equals(service.state(S1).analysisStatus()), "analysis finished");
+
+        String afterE4 = service.jumpAnalysis(S1, 0).analysisFrame().positionFen();
+        assertTrue(afterE4.startsWith("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b"), afterE4);
+
+        var legal = service.exploreLegal(S1, new WebGameService.ExploreRequest(afterE4, null));
+        assertEquals(20, legal.legalMoves().size());
+
+        // Black tries 1...c5 instead of the game's 1...e5.
+        WebGameService.ExploreView tried = service.explore(S1, new WebGameService.ExploreRequest(afterE4, "c7c5"));
+        assertEquals("c5", tried.san());
+        assertFalse(tried.whiteMove());
+        assertEquals(1, tried.moveNumber());
+        assertNotNull(tried.qualityTag());
+        assertNotNull(tried.explanation());
+        assertTrue(tried.fen().startsWith("rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w"), tried.fen());
+        assertEquals(30, tried.legalMoves().size());
+        assertSame(tried, service.explore(S1, new WebGameService.ExploreRequest(afterE4, "c7c5")), "cached");
+
+        // The review is untouched.
+        GameState review = service.state(S1);
+        assertTrue(review.analysisMode());
+        assertEquals(0, review.analysisFrame().plyIndex());
+        assertEquals(List.of("e2e4", "e7e5"), review.analysisEntries().stream().map(e -> e.playedMove()).toList());
+
+        assertThrows(IllegalArgumentException.class,
+            () -> service.explore(S1, new WebGameService.ExploreRequest(afterE4, "e2e4")), "White's move on Black's turn");
+        assertThrows(IllegalArgumentException.class,
+            () -> service.explore(S1, new WebGameService.ExploreRequest("not a fen", "e2e4")));
+        assertThrows(IllegalArgumentException.class,
+            () -> service.exploreLegal(S1, new WebGameService.ExploreRequest("8/8/8/8/8/8/8/8 w - - 0 1", null)), "no kings");
+    }
+
+    @Test
+    void finishedReviewsAreCachedAcrossSessions() throws Exception {
+        service = newService(fakeEngine(0), 2);
+        for (String session : new String[] {S1, S2}) {
+            service.move(session, new MoveRequest(4, 6, 4, 4));
+            service.analyze(session);
+            waitFor(() -> "ready".equals(service.state(session).analysisStatus()), "analysis finished");
+        }
+        assertEquals(service.state(S1).analysisSummary(), service.state(S2).analysisSummary());
+    }
+
+    @Test
     void analysisResultIsDroppedWhenGameChanges() throws Exception {
         service = newService(fakeEngine(300), 2);
         service.move(S1, new MoveRequest(4, 6, 4, 4));
@@ -248,6 +323,35 @@ class WebGameServiceTest {
         assertFalse(state.analysisMode());
         assertEquals("idle", state.analysisStatus());
         assertTrue(state.uciMoves().isEmpty());
+    }
+
+    @Test
+    void importedGamesHaveNoRunningClockInLiveViewOrReview() throws Exception {
+        service = newService(fakeEngine(0), 2);
+        GameState imported = service.importPgn(S1, new PgnImportRequest("1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 *"));
+        assertTrue(imported.untimed());
+        assertFalse(imported.clockStarted());
+
+        Thread.sleep(1_100); // a running clock would lose a second here
+        GameState later = service.state(S1);
+        assertEquals(imported.whiteClock(), later.whiteClock());
+        assertEquals(imported.blackClock(), later.blackClock());
+
+        service.analyze(S1);
+        waitFor(() -> "ready".equals(service.state(S1).analysisStatus()), "analysis finished");
+        service.jumpAnalysis(S1, 3);
+        GameState afterReview = service.exitAnalysis(S1);
+        assertFalse(afterReview.clockStarted());
+        assertEquals(imported.whiteClock(), afterReview.whiteClock());
+        assertEquals(imported.blackClock(), afterReview.blackClock());
+
+        // Continuing the imported game by hand does not start a clock either; a new game does.
+        GameState continued = service.move(S1, new MoveRequest(1, 7, 2, 5)).state(); // Nc3
+        assertFalse(continued.clockStarted());
+        service.startNewGame(S1, new NewGameRequest(null, true, null, null));
+        GameState fresh = service.move(S1, new MoveRequest(4, 6, 4, 4)).state();
+        assertFalse(fresh.untimed());
+        assertTrue(fresh.clockStarted());
     }
 
     @Test
