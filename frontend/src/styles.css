@@ -1429,6 +1429,24 @@ button:focus-visible {
   transition: width 400ms ease;
 }
 
+.progress-track.indeterminate .progress-fill {
+  width: 35%;
+  animation: progress-slide 1.2s ease-in-out infinite;
+}
+
+@keyframes progress-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(290%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress-track.indeterminate .progress-fill {
+    width: 100%;
+    animation: none;
+    opacity: 0.5;
+  }
+}
+
 .moves-section.is-hidden {
   display: none;
 }

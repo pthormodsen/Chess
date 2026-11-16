@@ -178,19 +178,29 @@ export function moveLabel(entry) {
 // ---------- While analysing ----------
 
 export function AnalysisProgress({ progress, entries }) {
-  const done = progress?.done ?? entries.length
-  const total = Math.max(1, progress?.total ?? done)
-  const percent = Math.round((done / total) * 100)
+  // Older backends (or a review that has not reported yet) give no progress: show an indeterminate bar
+  // rather than a made-up "0 / 1".
+  const known = progress != null && progress.total > 0
+  const done = known ? progress.done : 0
+  const total = known ? progress.total : 0
+  const percent = known ? Math.round((done / total) * 100) : 0
   return (
     <section className="analysis-progress" aria-label="Analysis progress">
       <div className="progress-head">
-        <strong>Analyzing game</strong>
-        <span>{done} / {total} moves · {percent}%</span>
+        <strong>{known ? 'Analyzing game' : 'Analyzing…'}</strong>
+        {known && <span>{done} / {total} moves · {percent}%</span>}
       </div>
-      <div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={total} aria-valuenow={done}>
-        <div className="progress-fill" style={{ width: `${percent}%` }} />
+      <div
+        className={`progress-track ${known ? '' : 'indeterminate'}`}
+        role="progressbar"
+        aria-valuemin={known ? 0 : undefined}
+        aria-valuemax={known ? total : undefined}
+        aria-valuenow={known ? done : undefined}
+        aria-valuetext={known ? undefined : 'Analyzing'}
+      >
+        <div className="progress-fill" style={known ? { width: `${percent}%` } : undefined} />
       </div>
-      <EvalGraph entries={entries} total={total} currentPly={-1} compact />
+      {entries.length > 0 && <EvalGraph entries={entries} total={total || entries.length} currentPly={-1} compact />}
       <ReviewMoveList entries={entries} currentPly={-1} compact />
     </section>
   )
