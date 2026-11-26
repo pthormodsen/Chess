@@ -8,16 +8,12 @@ import javax.swing.*;
 import java.awt.*;
 import java.awt.GraphicsEnvironment;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.BufferedInputStream;
-import java.io.ByteArrayInputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
@@ -34,7 +30,7 @@ public class Board extends JPanel {
     public String fenStartingPosition = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
     public int tileSize = 75;
-    private final int coordinateMargin = 24;
+    final int coordinateMargin = 24;
     int cols = 8;
     int rows = 8;
 
@@ -44,10 +40,12 @@ public class Board extends JPanel {
 
     Input input = new Input(this);
 
+    private final BoardPainter painter = new BoardPainter(this);
+
     public CheckScanner checkScanner = new CheckScanner(this);
 
     public int enPassantTile = -1;
-    private Move lastMove;
+    Move lastMove;
 
     private boolean isWhiteToMove = true;
     private boolean isGameOver = false;
@@ -79,7 +77,6 @@ public class Board extends JPanel {
     private boolean flipBoard = false;
     private int engineSkillLevel = 8;
     private int engineElo = 1200;
-    private Duration engineThinkTime = Duration.ofMillis(1200);
     private int timeControlMinutes = 10;
     private long initialClockMillis = Duration.ofMinutes(10).toMillis();
     private long whiteClockMillis = initialClockMillis;
@@ -93,16 +90,10 @@ public class Board extends JPanel {
     // Why the game ended, decided by board rules / clocks (never by engine evaluation). Null while the game is running.
     private GameEndReason gameEndReason;
     private String gameEndMessage;
-    private boolean isDraggingPiece = false;
-    private int dragScreenX;
-    private int dragScreenY;
-    private byte[] moveSound;
-    private byte[] captureSound;
-    private byte[] promoteSound;
-    private byte[] castleSound;
-    private byte[] checkSound;
-    private byte[] notifySound;
-    private boolean soundEnabled = !GraphicsEnvironment.isHeadless();
+    boolean isDraggingPiece = false;
+    int dragScreenX;
+    int dragScreenY;
+    private final BoardSounds sounds = new BoardSounds();
     private Consumer<String> statusConsumer;
     private Consumer<String> gameEndConsumer;
     private Consumer<String> evaluationConsumer;
@@ -113,18 +104,18 @@ public class Board extends JPanel {
     private boolean lastMoveDeliveredCheck;
     private boolean lastMoveDeliveredMate;
 
-    private boolean analysisMode = false;
-    private int analysisPointer = -1;
+    boolean analysisMode = false;
+    int analysisPointer = -1;
     private final java.util.List<AnalysisSnapshot> analysisSnapshots = new java.util.ArrayList<>();
     private java.util.List<String> reviewUciMoves = java.util.List.of();
     private java.util.List<String> reviewSanMoves = java.util.List.of();
     private java.util.List<GameAnalyzer.Entry> reviewEntries = java.util.List.of();
     private GameAnalyzer.Summary lastAnalysisSummary;
     private java.util.function.Consumer<AnalysisFrame> analysisFrameConsumer;
-    private MoveHighlight bestMoveArrow;
-    private String currentQualityTag;
+    MoveHighlight bestMoveArrow;
+    String currentQualityTag;
     private LiveGameState liveStateBackup;
-    private final ArrayList<MoveHighlight> checkMarkers = new ArrayList<>();
+    final ArrayList<MoveHighlight> checkMarkers = new ArrayList<>();
 
 
     public Board() {
@@ -151,7 +142,6 @@ public class Board extends JPanel {
         } else {
             initializeEngineIntegration();
         }
-        loadSounds();
         updateCheckMarkers();
     }
 
@@ -316,14 +306,10 @@ public class Board extends JPanel {
 
     public void setEngineElo(int elo){
         this.engineElo = Math.max(800, Math.min(2800, elo));
-        updateEngineSkillLevelForElo();
-        updateEngineThinkTimeForElo();
+        engineSkillLevel = EngineTempo.skillLevelForElo(engineElo);
         configureEngine();
     }
 
-    public void setEngineThinkTimeMillis(long millis){
-        this.engineThinkTime = Duration.ofMillis(Math.max(100, millis));
-    }
 
     public void setEnginePlaysWhite(boolean playsWhite){
         if(engineIsWhite != playsWhite){
@@ -480,15 +466,15 @@ public class Board extends JPanel {
             notifyEvaluation();
             repaint();
 
-            byte[] moveSoundToPlay = moveSound;
+            byte[] soundToPlay = sounds.move;
             if(move.isCastle){
-                moveSoundToPlay = castleSound;
+                soundToPlay = sounds.castle;
             } else if(move.isPromotion){
-                moveSoundToPlay = promoteSound;
+                soundToPlay = sounds.promote;
             } else if(move.capture != null){
-                moveSoundToPlay = captureSound;
+                soundToPlay = sounds.capture;
             }
-            playSound(moveSoundToPlay);
+            sounds.play(soundToPlay);
         }
         updateCheckMarkers();
     }
@@ -572,7 +558,7 @@ public class Board extends JPanel {
         removePiece(piece);
         if(notify){
             notifyCaptures();
-            playSound(captureSound);
+            sounds.play(sounds.capture);
         }
     }
 
@@ -741,7 +727,7 @@ public class Board extends JPanel {
         } else if (insufficientMaterial(true) && insufficientMaterial(false)) {
             finishGame(GameEndReason.INSUFFICIENT_MATERIAL, null);
         } else if (kingChecked){
-            playSound(checkSound);
+            sounds.play(sounds.check);
             if(statusConsumer != null){
                 statusConsumer.accept((isWhiteToMove ? "White" : "Black") + " is in check!");
             }
@@ -781,7 +767,7 @@ public class Board extends JPanel {
         if(clockTimer != null){
             clockTimer.stop();
         }
-        playSound(notifySound);
+        sounds.play(sounds.notify);
         lastResultTag = whiteWon == null ? "1/2-1/2" : (whiteWon ? "1-0" : "0-1");
         if(statusConsumer != null){
             statusConsumer.accept(message);
@@ -941,240 +927,14 @@ public class Board extends JPanel {
         return false;
     }
 
-    public Move getLastMove(){
-        return lastMove;
-    }
-
     @Override
     public void paintComponent(Graphics g) {
         super.paintComponent(g);
-        Graphics2D g2d = (Graphics2D) g;
-
-        //Painting board
-        for (int r = 0; r < rows; r++) {
-            for (int c = 0; c < cols; c++) {
-                g2d.setColor((c + r) % 2 == 0 ? new Color(240, 217, 181) : new Color(181, 139, 99));
-                g2d.fillRect(drawX(c), drawY(r), tileSize, tileSize);
-            }
-        }
-
-        if(lastMove != null){
-            Color moveHighlightColor = analysisMode && analysisPointer >= 0
-                ? qualityHighlightColor(currentQualityTag)
-                : new Color(246, 246, 105, 160);
-            g2d.setColor(moveHighlightColor);
-            g2d.fillRect(drawX(lastMove.oldCol), drawY(lastMove.oldRow), tileSize, tileSize);
-            g2d.fillRect(drawX(lastMove.newCol), drawY(lastMove.newRow), tileSize, tileSize);
-        }
-
-        if(selectedPiece != null){
-            g2d.setColor(new Color(255, 255, 140, 160));
-            g2d.fillRect(drawX(selectedPiece.col), drawY(selectedPiece.row), tileSize, tileSize);
-        }
-
-        // Paint legal moves (accurate Chess.com olive tone)
-        if (selectedPiece != null) {
-            Object oldAA = g2d.getRenderingHint(RenderingHints.KEY_ANTIALIASING);
-            g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-            Stroke oldStroke = g2d.getStroke();
-
-            final Color moveDot  = new Color(127, 166, 80, 140);  // olive green
-            final Color captureRing = new Color(127, 166, 80, 200);
-
-            for (int r = 0; r < rows; r++) {
-                for (int c = 0; c < cols; c++) {
-                    Move preview = new Move(this, selectedPiece, c, r);
-                    if (isValidMove(preview)) {
-
-                        int x = drawX(c);
-                        int y = drawY(r);
-
-                        if (preview.capture == null) {
-                            int diameter = tileSize / 3;
-                            int circleX = x + (tileSize - diameter) / 2;
-                            int circleY = y + (tileSize - diameter) / 2;
-
-                            g2d.setColor(moveDot);
-                            g2d.fillOval(circleX, circleY, diameter, diameter);
-
-                        } else {
-                            int padding = tileSize / 8;
-                            int size = tileSize - padding * 2;
-
-                            g2d.setColor(captureRing);
-                            g2d.setStroke(new BasicStroke(Math.max(2f, tileSize / 12f)));
-                            g2d.drawOval(x + padding, y + padding, size, size);
-                        }
-                    }
-                }
-            }
-
-            g2d.setStroke(oldStroke);
-            g2d.setRenderingHint(RenderingHints.KEY_ANTIALIASING, oldAA);
-        }
-
-        //Painting each piece
-        for(Piece piece : pieceList){
-            int oldX = piece.xPos;
-            int oldY = piece.yPos;
-            if(isDraggingPiece && piece == selectedPiece){
-                piece.xPos = dragScreenX;
-                piece.yPos = dragScreenY;
-            } else {
-                piece.xPos = drawX(piece.col);
-                piece.yPos = drawY(piece.row);
-            }
-            piece.paint(g2d);
-            piece.xPos = oldX;
-            piece.yPos = oldY;
-        }
-
-        if(!checkMarkers.isEmpty()){
-            for(MoveHighlight threat : checkMarkers){
-                drawArrow(g2d, threat, new Color(214, 73, 73, 220));
-            }
-        }
-        if(analysisMode && analysisPointer >= 0 && lastMove != null){
-            MoveHighlight actualArrow = new MoveHighlight(lastMove.oldCol, lastMove.oldRow, lastMove.newCol, lastMove.newRow);
-            drawArrow(g2d, actualArrow, qualityColor(currentQualityTag));
-        }
-        if(bestMoveArrow != null){
-            drawArrow(g2d, bestMoveArrow, new Color(65, 190, 120, 220));
-        }
-
-        drawCoordinates(g2d);
-        drawQualityBadge(g2d);
+        painter.paint((Graphics2D) g);
     }
 
-    private Color qualityColor(String tag){
-        if(tag == null){
-            return new Color(80, 150, 255, 200);
-        }
-        switch (tag){
-            case "Brilliant":
-                return new Color(38, 194, 163, 220);
-            case "Great":
-                return new Color(116, 155, 191, 210);
-            case "Best":
-                return new Color(129, 182, 76, 210);
-            case "Excellent":
-                return new Color(129, 182, 76, 210);
-            case "Good":
-                return new Color(149, 183, 118, 210);
-            case "Inaccuracy":
-                return new Color(247, 192, 69, 210);
-            case "Mistake":
-                return new Color(255, 167, 89, 210);
-            case "Severe Mistake":
-                return new Color(217, 95, 14, 210);
-            case "Blunder":
-                return new Color(212, 63, 58, 210);
-            case "Book":
-                return new Color(168, 136, 101, 210);
-            case "Miss":
-                return new Color(255, 119, 105, 210);
-            case "Mate":
-                return new Color(186, 85, 211, 220);
-            default:
-                return new Color(80, 150, 255, 200);
-        }
-    }
-
-    private Color qualityHighlightColor(String tag){
-        Color base = qualityColor(tag);
-        return new Color(base.getRed(), base.getGreen(), base.getBlue(), 140);
-    }
-
-    private void drawArrow(Graphics2D g2d, MoveHighlight arrow, Color color){
-        if(arrow == null){
-            return;
-        }
-        Color paintColor = color != null ? color : new Color(255, 255, 255, 200);
-        int fromX = drawX(arrow.fromCol) + tileSize / 2;
-        int fromY = drawY(arrow.fromRow) + tileSize / 2;
-        int toX = drawX(arrow.toCol) + tileSize / 2;
-        int toY = drawY(arrow.toRow) + tileSize / 2;
-
-        Graphics2D g = (Graphics2D) g2d.create();
-        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-
-        int headLength = Math.max(tileSize / 2, 18);
-        int headWidth = Math.max(tileSize / 3, 14);
-        int shaftWidth = Math.max(tileSize / 7, 7);
-
-        double dx = toX - fromX;
-        double dy = toY - fromY;
-        double length = Math.max(1, Math.hypot(dx, dy));
-        double ux = dx / length;
-        double uy = dy / length;
-        double px = -uy;
-        double py = ux;
-
-        int shaftEndX = (int) (toX - ux * headLength);
-        int shaftEndY = (int) (toY - uy * headLength);
-
-        java.awt.geom.GeneralPath shaft = new java.awt.geom.GeneralPath();
-        shaft.moveTo(fromX + px * shaftWidth, fromY + py * shaftWidth);
-        shaft.lineTo(shaftEndX + px * shaftWidth, shaftEndY + py * shaftWidth);
-        shaft.lineTo(shaftEndX - px * shaftWidth, shaftEndY - py * shaftWidth);
-        shaft.lineTo(fromX - px * shaftWidth, fromY - py * shaftWidth);
-        shaft.closePath();
-
-        java.awt.Polygon head = new java.awt.Polygon();
-        head.addPoint(toX, toY);
-        head.addPoint((int) (shaftEndX + px * headWidth), (int) (shaftEndY + py * headWidth));
-        head.addPoint((int) (shaftEndX - px * headWidth), (int) (shaftEndY - py * headWidth));
-
-        java.awt.geom.AffineTransform shadowTx = java.awt.geom.AffineTransform.getTranslateInstance(2, 3);
-        Shape shaftShadow = shadowTx.createTransformedShape(shaft);
-        Shape headShadow = shadowTx.createTransformedShape(head);
-        g.setColor(new Color(0, 0, 0, 50));
-        g.fill(shaftShadow);
-        g.fill(headShadow);
-
-        Color start = new Color(paintColor.getRed(), paintColor.getGreen(), paintColor.getBlue(), 90);
-        Color end = new Color(paintColor.getRed(), paintColor.getGreen(), paintColor.getBlue(), 210);
-        g.setPaint(new GradientPaint(fromX, fromY, start, toX, toY, end));
-        g.fill(shaft);
-        g.fill(head);
-
-        g.setStroke(new BasicStroke(Math.max(1.5f, tileSize / 24f), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-        g.setColor(new Color(255, 255, 255, 80));
-        g.draw(shaft);
-        g.draw(head);
-        g.dispose();
-    }
-
-    private void drawQualityBadge(Graphics2D g2d){
-        if(!analysisMode || analysisPointer < 0 || currentQualityTag == null){
-            return;
-        }
-        String label = currentQualityTag.toUpperCase();
-        Graphics2D g = (Graphics2D) g2d.create();
-        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-        Font font = getFont().deriveFont(Font.BOLD, 16f);
-        g.setFont(font);
-        FontMetrics fm = g.getFontMetrics();
-        int textWidth = fm.stringWidth(label);
-        int textHeight = fm.getAscent();
-        int padding = 10;
-        int badgeWidth = textWidth + padding * 2;
-        int badgeHeight = textHeight + padding;
-        int x = coordinateMargin + (cols * tileSize - badgeWidth) / 2;
-        int y = Math.max(6, coordinateMargin / 2);
-        Color base = qualityColor(currentQualityTag);
-        Color fill = new Color(base.getRed(), base.getGreen(), base.getBlue(), 200);
-        g.setColor(fill);
-        g.fillRoundRect(x, y, badgeWidth, badgeHeight, 16, 16);
-        g.setColor(new Color(0, 0, 0, 60));
-        g.drawRoundRect(x, y, badgeWidth, badgeHeight, 16, 16);
-        if(fill.getRed() * 0.299 + fill.getGreen() * 0.587 + fill.getBlue() * 0.114 < 140){
-            g.setColor(Color.WHITE);
-        } else {
-            g.setColor(Color.BLACK);
-        }
-        g.drawString(label, x + padding, y + padding + textHeight - fm.getDescent());
-        g.dispose();
+    public Move getLastMove(){
+        return lastMove;
     }
 
     private void updateCheckMarkers(){
@@ -1242,49 +1002,6 @@ public class Board extends JPanel {
         return true;
     }
 
-    private void drawCoordinates(Graphics2D g2d){
-        Graphics2D g = (Graphics2D) g2d.create();
-        g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
-        Font font = getFont().deriveFont(Font.BOLD, 12f);
-        g.setFont(font);
-        Color text = new Color(230, 230, 230, 200);
-        Color shadow = new Color(0, 0, 0, 120);
-
-        for(int c = 0; c < cols; c++){
-            int boardCol = screenToBoardCol(c);
-            char file = (char) ('a' + boardCol);
-            int x = coordinateMargin + c * tileSize + tileSize - 12;
-            int topY = coordinateMargin - 6;
-            int bottomY = coordinateMargin + boardHeightPx() + 16;
-            g.setColor(shadow);
-            g.drawString(String.valueOf(file), x + 1, bottomY + 1);
-            g.setColor(text);
-            g.drawString(String.valueOf(file), x, bottomY);
-            g.setColor(shadow);
-            g.drawString(String.valueOf(file), x + 1, topY + 1);
-            g.setColor(text);
-            g.drawString(String.valueOf(file), x, topY);
-        }
-
-        for(int r = 0; r < rows; r++){
-            int boardRow = screenToBoardRow(r);
-            String rank = String.valueOf(rows - boardRow);
-            int leftX = coordinateMargin - 18;
-            int rightX = coordinateMargin + boardWidthPx() + 6;
-            int y = coordinateMargin + r * tileSize + 14;
-            g.setColor(shadow);
-            g.drawString(rank, leftX + 1, y + 1);
-            g.setColor(text);
-            g.drawString(rank, leftX, y);
-            g.setColor(shadow);
-            g.drawString(rank, rightX + 1, y + 1);
-            g.setColor(text);
-            g.drawString(rank, rightX, y);
-        }
-        g.dispose();
-    }
-
-
     private Path resolveEnginePath(){
         if(engineBinaryPath != null){
             return engineBinaryPath;
@@ -1346,7 +1063,9 @@ public class Board extends JPanel {
         final long requestId = ++engineRequestId;
         final int plyAtRequest = moveHistory.size();
         final String moves = String.join(" ", moveHistory);
-        final Duration thinkTime = dynamicEngineThinkTime();
+        final Duration thinkTime = untimed
+            ? EngineTempo.thinkTime(moveHistory, engineElo, ThreadLocalRandom.current())
+            : EngineTempo.timedThinkTime(engineElo, timeControlMinutes, moveHistory.size(), pieceList.size(), ThreadLocalRandom.current());
         final StockfishClient client = stockfishClient;
         engineExecutor.submit(() -> {
             String uciMove = null;
@@ -1396,90 +1115,6 @@ public class Board extends JPanel {
     private void cancelPendingEngineMove(){
         engineRequestId++;
         engineThinking = false;
-    }
-
-    private void updateEngineThinkTimeForElo(){
-        long millis;
-        if(engineElo <= 1000){
-            millis = 700;
-        } else if(engineElo <= 1200){
-            millis = 900;
-        } else if(engineElo <= 1400){
-            millis = 1100;
-        } else if(engineElo <= 1600){
-            millis = 1350;
-        } else if(engineElo <= 1800){
-            millis = 1600;
-        } else if(engineElo <= 2000){
-            millis = 1900;
-        } else if(engineElo <= 2200){
-            millis = 2300;
-        } else if(engineElo <= 2400){
-            millis = 2700;
-        } else {
-            millis = 3200;
-        }
-        engineThinkTime = Duration.ofMillis(millis);
-    }
-
-    private void updateEngineSkillLevelForElo(){
-        if(engineElo <= 900){
-            engineSkillLevel = 1;
-        } else if(engineElo <= 1100){
-            engineSkillLevel = 3;
-        } else if(engineElo <= 1300){
-            engineSkillLevel = 5;
-        } else if(engineElo <= 1500){
-            engineSkillLevel = 7;
-        } else if(engineElo <= 1700){
-            engineSkillLevel = 9;
-        } else if(engineElo <= 1900){
-            engineSkillLevel = 11;
-        } else if(engineElo <= 2100){
-            engineSkillLevel = 13;
-        } else if(engineElo <= 2300){
-            engineSkillLevel = 15;
-        } else if(engineElo <= 2500){
-            engineSkillLevel = 17;
-        } else {
-            engineSkillLevel = 20;
-        }
-    }
-
-    private Duration dynamicEngineThinkTime(){
-        if(untimed){
-            return EngineTempo.thinkTime(moveHistory, engineElo, ThreadLocalRandom.current());
-        }
-        long baseMillis = engineThinkTime.toMillis();
-        double timeFactor = timeControlFactor();
-        long jitter = ThreadLocalRandom.current().nextLong(-220, 381);
-        long openingAdjustment = moveHistory.size() < 10 ? -120 : 0;
-        long endgameAdjustment = pieceList.size() <= 12 ? 250 : 0;
-        long scaledBaseMillis = Math.round(baseMillis * timeFactor);
-        long millis = Math.max(500, Math.min(5200, scaledBaseMillis + jitter + openingAdjustment + endgameAdjustment));
-        return Duration.ofMillis(millis);
-    }
-
-    private double timeControlFactor(){
-        if(timeControlMinutes <= 1){
-            return 0.65;
-        }
-        if(timeControlMinutes <= 3){
-            return 0.85;
-        }
-        if(timeControlMinutes <= 5){
-            return 1.0;
-        }
-        if(timeControlMinutes <= 10){
-            return 1.35;
-        }
-        if(timeControlMinutes <= 15){
-            return 1.55;
-        }
-        if(timeControlMinutes <= 30){
-            return 1.85;
-        }
-        return 2.1;
     }
 
     private void applyUciMove(String uciMove){
@@ -2334,58 +1969,19 @@ public class Board extends JPanel {
         }
     }
 
-    private void loadSounds(){
-        moveSound = loadSoundData("sounds/move-self.mp3");
-        captureSound = loadSoundData("sounds/capture.mp3");
-        promoteSound = loadSoundData("sounds/promote.mp3");
-        castleSound = loadSoundData("sounds/castle.mp3");
-        checkSound = loadSoundData("sounds/move-check.mp3");
-        notifySound = loadSoundData("sounds/notify.mp3");
-    }
-
-    private byte[] loadSoundData(String resource){
-        try (InputStream is = getClass().getClassLoader().getResourceAsStream(resource)) {
-            if(is == null){
-                System.err.println("Missing sound: " + resource);
-                return null;
-            }
-            return is.readAllBytes();
-        } catch (Exception e){
-            System.err.println("Unable to load sound " + resource + ": " + e.getMessage());
-            return null;
-        }
-    }
-
-    private void playSound(byte[] data){
-        if(!soundEnabled || data == null){
-            return;
-        }
-        byte[] copy = Arrays.copyOf(data, data.length);
-        new Thread(() -> {
-            try (BufferedInputStream bis = new BufferedInputStream(new ByteArrayInputStream(copy))) {
-                Player player = new Player(bis);
-                player.play();
-            } catch (Exception e){
-                System.err.println("Unable to play sound: " + e.getMessage());
-                soundEnabled = false;
-            }
-        }).start();
-    }
-
-
-    private int drawX(int col){
+    int drawX(int col){
         return coordinateMargin + applyFlip(col) * tileSize;
     }
 
-    private int drawY(int row){
+    int drawY(int row){
         return coordinateMargin + applyFlipRow(row) * tileSize;
     }
 
-    private int boardWidthPx(){
+    int boardWidthPx(){
         return cols * tileSize;
     }
 
-    private int boardHeightPx(){
+    int boardHeightPx(){
         return rows * tileSize;
     }
 
@@ -2504,7 +2100,7 @@ public class Board extends JPanel {
         }
     }
 
-    private static final class MoveHighlight {
+    static final class MoveHighlight {
         final int fromCol;
         final int fromRow;
         final int toCol;
