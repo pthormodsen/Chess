@@ -228,8 +228,10 @@ export default function App() {
   const [explorePending, setExplorePending] = useState(null)
   // Your move, shown on the board while the server confirms it (reverted if it is rejected).
   const [optimisticMove, setOptimisticMove] = useState(null)
-  // A move queued while Stockfish thinks; played as soon as it is your turn (dropped if it is illegal then).
-  const [premove, setPremove] = useState(null)
+  // Moves queued while Stockfish thinks (chess.com style): shown on the board at once, played one per turn
+  // as soon as Stockfish has moved. If one is illegal by then, the whole queue is dropped.
+  const [premoves, setPremoves] = useState([])
+  const premoveBusyRef = useRef(false)
   const engineTurnRef = useRef(false)
   // { fromCol, fromRow, toCol, toRow, id }: the piece on the target square slides in from its origin.
   const [slide, setSlide] = useState(null)
@@ -281,9 +283,11 @@ export default function App() {
   const interactiveTurn = interactiveFen ? (interactiveFen.split(' ')[1] === 'w' ? 'white' : 'black') : null
   const positionPieces = previewPly ? piecesFromFen(previewPly.fen) : explorePly ? piecesFromFen(explorePly.fen) : game?.pieces
   const liveOptimistic = optimisticMove && !game?.analysisMode ? optimisticMove : null
+  const livePieces = liveOptimistic ? withMoveApplied(positionPieces, liveOptimistic) : positionPieces
+  const premoveActive = premoves.length > 0 && !game?.analysisMode
   const boardPieces = explorePending ? withMoveApplied(positionPieces, explorePending)
-    : liveOptimistic ? withMoveApplied(positionPieces, liveOptimistic)
-    : positionPieces
+    : premoveActive ? premoves.reduce(withMoveApplied, livePieces)
+    : livePieces
 
   const piecesBySquare = useMemo(() => {
     const map = new Map()
@@ -305,7 +309,7 @@ export default function App() {
   const engineTurn = Boolean(game?.engineTurn)
   engineTurnRef.current = engineTurn
   const myColor = game && !game.humanVsHuman ? (game.enginePlaysWhite ? 'black' : 'white') : null
-  const premoveMode = Boolean(myColor && game.active && engineTurn && !game.analysisMode && !game.awaitingStart && !pending)
+  const premoveMode = Boolean(myColor && game.active && (engineTurn || pending) && !game.analysisMode && !game.awaitingStart)
   const engineUnavailable = Boolean(game && !game.humanVsHuman && !game.engineEnabled && game.active && !game.analysisMode)
   // Stockfish games: fixed orientation from "Play as". Local games: the side to move sits at the bottom.
   const [flipPrefs, setFlipPrefs] = useState(readFlipPrefs)
@@ -357,24 +361,37 @@ export default function App() {
     playSound(/[+#]/.test(san) ? 'check' : shownPieceCount < previous.count || san.includes('x') ? 'capture' : 'move')
   }, [shownStep?.scope, shownStep?.n])
 
-  // A queued premove is played the moment Stockfish has moved, if it is still legal; otherwise it is dropped.
+  // The first queued premove is played the moment Stockfish has moved, if it is legal; otherwise the queue is dropped.
   useEffect(() => {
-    if (!premove || !game) return
+    if (!premoves.length || !game) return
     if (game.analysisMode || !game.active || game.humanVsHuman || game.awaitingStart) {
-      setPremove(null)
+      setPremoves([])
       return
     }
-    if (engineTurn || pending || game.turn !== myColor) return
-    const queued = premove
-    setPremove(null)
-    const origin = { col: queued.fromCol, row: queued.fromRow }
-    const target = { col: queued.toCol, row: queued.toRow }
+    if (engineTurn || pending || game.turn !== myColor || premoveBusyRef.current) return
+    premoveBusyRef.current = true
+    const [next, ...rest] = premoves
+    setPremoves(rest)
+    const origin = { col: next.fromCol, row: next.fromRow }
+    const target = { col: next.toCol, row: next.toRow }
     fetchLegalMoves(origin)
-      .then(moves => {
-        if (moves.some(move => sameSquare(move, target))) submitMove(origin, target, queued.promotion ?? undefined, { quiet: true })
+      .then(async moves => {
+        if (!moves.some(move => sameSquare(move, target))) {
+          setPremoves([])
+          return
+        }
+        draggedRef.current = true // the piece is already shown on its target: no slide
+        const played = await submitMove(origin, target, next.promotion ?? undefined, { quiet: true })
+        if (!played) setPremoves([])
       })
-      .catch(() => {})
-  }, [game, premove, engineTurn, pending])
+      .catch(() => setPremoves([]))
+      .finally(() => { premoveBusyRef.current = false })
+  }, [game, premoves, engineTurn, pending])
+
+  function cancelPremoves() {
+    setPremoves([])
+    clearSelection()
+  }
 
   // Premove targets and real legal moves differ: a selection never carries over when Stockfish's turn starts or ends.
   useEffect(() => {
@@ -382,15 +399,13 @@ export default function App() {
   }, [premoveMode])
 
   useEffect(() => {
-    if (!premove) return
+    if (!premoves.length) return
     function cancelOnEscape(event) {
-      if (event.key !== 'Escape') return
-      setPremove(null)
-      clearSelection()
+      if (event.key === 'Escape') cancelPremoves()
     }
     window.addEventListener('keydown', cancelOnEscape)
     return () => window.removeEventListener('keydown', cancelOnEscape)
-  }, [premove])
+  }, [premoves.length])
 
   // Turn the board only after a move has fully landed: never mid-drag, never with the promotion picker open,
   // and never while stepping through a review (orientation stays as it was when review began).
@@ -726,8 +741,8 @@ export default function App() {
     if (premoveMode) {
       if (!premoveTargets(boardPieces, piece).some(move => sameSquare(move, target))) return
       const promotes = piece.name === 'Pawn' && (target.row === 0 || target.row === 7)
-      setPremove({ fromCol: origin.col, fromRow: origin.row, toCol: target.col, toRow: target.row, promotion: promotes ? 'q' : null })
-      draggedRef.current = false // the premove only marks squares; Stockfish's reply should still slide
+      setPremoves(queue => [...queue, { fromCol: origin.col, fromRow: origin.row, toCol: target.col, toRow: target.row, promotion: promotes ? 'q' : null }])
+      draggedRef.current = false // the premove is only drawn; Stockfish's reply should still slide
       clearSelection()
       return
     }
@@ -776,6 +791,7 @@ export default function App() {
       setPending(false)
     }
     if (failed) await refreshGame()
+    return !failed
   }
 
   function handleSquareClick(col, row) {
@@ -784,9 +800,17 @@ export default function App() {
     if (reviewInteractive) {
       if (pending || promotion || explorePending) return
     } else {
-      if (pending || promotion || !game?.active || (engineTurn && !premoveMode) || game?.analysisMode) return
-      // Any click while a premove is queued cancels it (a click on your own piece starts a new one).
-      if (premove && !selected) setPremove(null)
+      if (premoveMode && !promotion) {
+        // Premoving: a target queues the move, your own piece is picked up, anything else cancels every premove.
+        const square = { col, row }
+        const piece = piecesBySquare.get(`${col},${row}`)
+        if (selected && legalMoves.some(move => sameSquare(move, square))) attemptMove(selected, square)
+        else if (sameSquare(selected, square)) clearSelection()
+        else if (piece?.color === myColor) selectPiece(piece)
+        else cancelPremoves()
+        return
+      }
+      if (pending || promotion || !game?.active || engineTurn || game?.analysisMode) return
       if (game?.awaitingStart && !game?.humanVsHuman) return
     }
 
@@ -1104,10 +1128,9 @@ export default function App() {
               role="grid"
               aria-label="Chess board"
               onContextMenu={event => {
-                if (!premove && !selected) return
+                if (!premoves.length && !selected) return
                 event.preventDefault()
-                setPremove(null)
-                clearSelection()
+                cancelPremoves()
               }}
             >
               {showBestArrow && <BoardArrow move={reviewBestMove} flipped={flipped} tone="best-suggestion" label="Best move" />}
@@ -1130,7 +1153,7 @@ export default function App() {
                 const movable = canMovePiece(piece)
                 const draggingHere = dragGhost && sameSquare(dragGhost.piece, square)
                 const slideHere = slide && slide.toCol === col && slide.toRow === row
-                const premoveHere = premove && ((premove.fromCol === col && premove.fromRow === row) || (premove.toCol === col && premove.toRow === row))
+                const premoveHere = premoveActive && premoves.some(item => (item.fromCol === col && item.fromRow === row) || (item.toCol === col && item.toRow === row))
                 const slideStyle = slideHere ? {
                   '--slide-x': `${((flipped ? 7 - slide.fromCol : slide.fromCol) - displayCol) * 100}%`,
                   '--slide-y': `${((flipped ? 7 - slide.fromRow : slide.fromRow) - displayRow) * 100}%`
@@ -1144,7 +1167,7 @@ export default function App() {
                       'square',
                       dark ? 'dark' : 'light',
                       selectedHere ? 'selected' : '',
-                      lastHere && !reviewTintHere ? 'last-move' : '',
+                      lastHere && !reviewTintHere && !premoveHere ? 'last-move' : '',
                       reviewTintHere ? 'review-square' : '',
                       previewPly && lastHere ? 'line-square' : '',
                       move?.capture ? 'can-capture' : '',
