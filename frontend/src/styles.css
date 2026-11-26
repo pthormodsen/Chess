@@ -631,9 +631,8 @@ h2 {
   flex: none;
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 16px 16px 12px;
+  gap: 10px;
+  padding: 18px 16px 14px;
 }
 
 .status-text {
@@ -650,11 +649,13 @@ h2 {
   text-transform: uppercase;
 }
 
-.panel-status h1 {
+.panel-status h1,
+.puzzle-status h1 {
+  min-width: 0;
   color: var(--text-strong);
-  font-size: 19px;
+  font-size: 20px;
   font-weight: 750;
-  line-height: 1.2;
+  line-height: 1.25;
   overflow-wrap: anywhere;
 }
 
@@ -667,8 +668,9 @@ h2 {
 }
 
 .turn-dot {
-  width: 14px;
-  height: 14px;
+  flex: none;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
   box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.18);
 }
@@ -682,6 +684,8 @@ h2 {
 }
 
 .result-chip {
+  flex: none;
+  margin: 1px 0 0 auto;
   padding: 3px 8px;
   border-radius: 4px;
   background: var(--panel-raised);
@@ -818,10 +822,8 @@ select:disabled {
 
 .field-label {
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .segmented {
@@ -922,9 +924,12 @@ button:focus-visible {
 }
 
 .moves.empty {
-  padding: 8px 16px 16px;
+  display: grid;
+  place-items: center;
+  padding: 16px;
   color: var(--faint);
   font-size: 13px;
+  text-align: center;
 }
 
 .move-row {
@@ -970,14 +975,12 @@ button:focus-visible {
 }
 
 .primary-action {
-  height: 50px;
+  height: 46px;
   border-radius: 8px;
   background: var(--green);
-  box-shadow: inset 0 -4px 0 var(--green-shade);
   color: #ffffff;
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 800;
-  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.2);
   cursor: pointer;
   transition: background 0.12s ease;
 }
@@ -993,13 +996,15 @@ button:focus-visible {
 
 .quiet-actions {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-columns: minmax(0, 1fr);
+  grid-auto-flow: column;
   gap: 4px;
 }
 
 .quiet-action {
   min-height: 36px;
-  padding: 0 10px;
+  padding: 0 6px;
+  white-space: nowrap;
   border-radius: 6px;
   background: transparent;
   color: var(--muted);
@@ -1112,7 +1117,8 @@ button:focus-visible {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 12px 8px 16px;
+  padding: 10px 12px 10px 16px;
+  border-bottom: 1px solid var(--hairline);
 }
 
 .review-tabs {
@@ -1166,7 +1172,7 @@ button:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 2px 16px 12px;
+  padding: 12px 16px;
   overflow: auto;
 }
 
@@ -1254,20 +1260,23 @@ button:focus-visible {
 
 /* ---------- Evaluation bar (left of the board) ---------- */
 
-.game-layout.is-review {
+.game-layout {
   --eval-w: 18px;
   --eval-gap: 6px;
 }
 
-.game-layout.is-review {
-  /* Room for the evaluation bar left of the board. */
-  --board-size: max(300px, min(720px, calc(100vh - 132px), calc(100vw - 488px)));
-  --board-size: max(300px, min(720px, calc(100dvh - 132px), calc(100vw - 488px)));
-  grid-template-columns: calc(var(--board-size) + var(--eval-w) + var(--eval-gap)) var(--panel-w);
-}
+/* Room for the evaluation bar left of the board. On desktop it is reserved in live play too,
+   so entering review does not move the board or the panel. */
+@media (min-width: 921px) {
+  .game-layout:not(.is-puzzle) {
+    --board-size: max(300px, min(720px, calc(100vh - 132px), calc(100vw - 488px)));
+    --board-size: max(300px, min(720px, calc(100dvh - 132px), calc(100vw - 488px)));
+    grid-template-columns: calc(var(--board-size) + var(--eval-w) + var(--eval-gap)) var(--panel-w);
+  }
 
-.is-review .play-area {
-  margin-left: calc(var(--eval-w) + var(--eval-gap));
+  .game-layout:not(.is-puzzle) .play-area {
+    margin-left: calc(var(--eval-w) + var(--eval-gap));
+  }
 }
 
 @media (max-width: 430px) {
@@ -1401,7 +1410,7 @@ button:focus-visible {
   flex: none;
   display: grid;
   gap: 10px;
-  margin: 0 16px 12px;
+  margin: 12px 16px auto;
   padding: 12px;
   border-radius: 8px;
   background: var(--panel-raised);
@@ -1478,8 +1487,8 @@ button:focus-visible {
 .accuracy-label {
   color: var(--muted);
   font-size: 11px;
-  font-weight: 900;
-  letter-spacing: 0.06em;
+  font-weight: 800;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
@@ -1675,11 +1684,9 @@ button.review-move:hover {
 }
 
 .coach-mover {
-  overflow: hidden;
   color: var(--muted);
   font-size: 12px;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  line-height: 1.35;
 }
 
 .eval-chip {
@@ -1855,7 +1862,7 @@ button.review-move:hover {
 .review-nav {
   flex: none;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, 44px) minmax(0, 1fr);
   gap: 6px;
   padding: 10px 16px 14px;
   border-top: 1px solid var(--hairline);
@@ -1863,28 +1870,20 @@ button.review-move:hover {
 }
 
 .review-nav button {
-  height: 44px;
-  border-radius: 7px;
-  background: #45423d;
-  box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.25);
+  height: 42px;
+  border-radius: 8px;
+  background: var(--panel-raised);
   color: var(--text-strong);
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 800;
   cursor: pointer;
 }
 
 .review-nav button.key-moment {
-  grid-column: span 3;
-  height: 40px;
+  padding: 0 10px;
   background: var(--green);
-  box-shadow: inset 0 -3px 0 var(--green-shade);
   font-size: 14px;
-}
-
-.review-nav button.key-moment.prev {
-  grid-column: span 1;
-  background: #45423d;
-  box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.25);
+  white-space: nowrap;
 }
 
 .review-nav button:hover:not(:disabled) {
@@ -2469,9 +2468,9 @@ button.review-move:hover {
   transition: background 0.2s ease;
 }
 
+.panel-status .turn-dot,
 .puzzle-status .turn-dot {
-  margin-top: 6px;
-  flex: none;
+  margin-top: 8px;
 }
 
 .puzzle-status.right {
@@ -2486,13 +2485,6 @@ button.review-move:hover {
   display: grid;
   gap: 4px;
   min-width: 0;
-}
-
-.puzzle-status h1 {
-  color: var(--text-strong);
-  font-size: 22px;
-  font-weight: 800;
-  line-height: 1.2;
 }
 
 .puzzle-status p {

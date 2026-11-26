@@ -467,7 +467,6 @@ export function ExplorePanel({ explore, baseLabel, busy, onSelect, onExit }) {
 // ---------- Navigation ----------
 
 export function ReviewNav({ ply, total, entries, disabled, onGoto }) {
-  const previousKey = findKeyMoment(entries, ply, -1)
   const nextKey = findKeyMoment(entries, ply, 1)
   const last = total - 1
   return (
@@ -476,10 +475,8 @@ export function ReviewNav({ ply, total, entries, disabled, onGoto }) {
       <button type="button" onClick={() => onGoto(ply - 1)} disabled={disabled || ply < 0} aria-label="Previous move (←)" title="Previous move (←)">◀</button>
       <button type="button" onClick={() => onGoto(ply + 1)} disabled={disabled || ply >= last} aria-label="Next move (→)" title="Next move (→)">▶</button>
       <button type="button" onClick={() => onGoto(last)} disabled={disabled || ply >= last} aria-label="Last move (End)" title="Last move (End)">⏭</button>
-      <button type="button" className="key-moment prev" onClick={() => onGoto(previousKey)} disabled={disabled || previousKey == null}
-        aria-label="Previous key moment (↑)" title="Previous key moment (↑)">↶ Key</button>
       <button type="button" className="key-moment" onClick={() => onGoto(nextKey)} disabled={disabled || nextKey == null}
-        aria-label="Next key moment (↓)" title="Next key moment (↓)">Next key moment ↷</button>
+        aria-label="Next key moment (↓)" title="Next key moment (↓) · previous: ↑">Next key moment</button>
     </div>
   )
 }

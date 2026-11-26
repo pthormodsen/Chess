@@ -848,23 +848,16 @@ export default function App() {
       active={game?.turn === side && game?.active && !game?.awaitingStart}
       clockRunning={game?.turn === side && game?.active && game?.clockStarted && !game?.analysisMode}
       untimed={Boolean(game?.untimed)}
-      showClock={game?.humanVsHuman ?? true}
+      showClock={humanVsHuman}
       thinking={engineTurn && side === engineSide}
       captures={side === 'white' ? whiteCaptures : blackCaptures}
       advantage={side === 'white' ? balance : -balance}
     />
   )
-  const reviewHeadline = reviewStage === 'summary'
-    ? 'Game review'
-    : explorePly
-      ? `Your line · ${explorePly.moveNumber}${explorePly.whiteMove ? '.' : '...'} ${explorePly.san}`
-    : reviewFrame?.plyIndex >= 0
-      ? `${reviewFrame.moveNumber}${reviewFrame.whiteMove ? '.' : '...'} ${reviewFrame.san}${reviewFrame.gameEndMessage ? ` · ${reviewFrame.gameEndMessage}` : ''}`
-      : 'Starting position'
   const headline = disconnected
     ? 'Game server unavailable'
     : game?.analysisMode
-      ? reviewHeadline
+      ? 'Game review'
     : engineUnavailable
       ? 'Stockfish unavailable'
       : engineTurn
@@ -1037,15 +1030,11 @@ export default function App() {
 
         <aside className="side-panel">
           <header className="panel-status">
-            <div className="status-text">
-              <span className="status-kicker">{inReview ? 'Game review' : 'Live game'}</span>
-              <h1 aria-live="polite">{headline}</h1>
-            </div>
-            <div className="status-meta">
-              {result
-                ? <span className="result-chip">{result}</span>
-                : <span className={`turn-dot ${game?.turn ?? 'white'}`} title={`${game?.turn ?? 'white'} to move`} />}
-            </div>
+            {!inReview && !result && (
+              <span className={`turn-dot ${game?.turn ?? 'white'}`} title={`${game?.turn ?? 'white'} to move`} />
+            )}
+            <h1 aria-live="polite">{headline}</h1>
+            {result && <span className="result-chip">{result}</span>}
           </header>
 
           {disconnected && (
@@ -1241,10 +1230,12 @@ export default function App() {
                   <button type="button" className="quiet-action" onClick={analyzeGame} disabled={analysisRunning}>
                     {analysisRunning ? 'Analyzing…' : 'Analyze'}
                   </button>
-                  <button type="button" className="quiet-action" onClick={copyPgn}>{copyLabel}</button>
+                  <button type="button" className="quiet-action" onClick={copyPgn} title="Copy PGN">
+                    {copyLabel === 'Copy PGN' ? 'Copy' : copyLabel}
+                  </button>
                   <button type="button" className="quiet-action" onClick={toggleFlip} aria-label="Flip board" title="Flip board">⇅ Flip</button>
-                  <button type="button" className={`quiet-action ${showImport ? 'active' : ''}`} onClick={() => setShowImport(value => !value)}>
-                    Import PGN
+                  <button type="button" className={`quiet-action ${showImport ? 'active' : ''}`} onClick={() => setShowImport(value => !value)} title="Import PGN">
+                    Import
                   </button>
                 </div>
               </footer>
