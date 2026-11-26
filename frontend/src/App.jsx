@@ -36,6 +36,11 @@ function formatApiError(err) {
   return err.message
 }
 
+function samePremoves(a, b) {
+  return a.length === b.length && a.every((move, i) => move.fromCol === b[i].fromCol && move.fromRow === b[i].fromRow
+    && move.toCol === b[i].toCol && move.toRow === b[i].toRow && (move.promotion ?? null) === (b[i].promotion ?? null))
+}
+
 function squareMap(pieces) {
   const map = new Map()
   for (const piece of pieces ?? []) map.set(`${piece.col},${piece.row}`, piece)
@@ -315,13 +320,14 @@ export default function App() {
   const [explorePending, setExplorePending] = useState(null)
   // Your move, shown on the board while the server confirms it (reverted if it is rejected).
   const [optimisticMove, setOptimisticMove] = useState(null)
-  // Moves queued while Stockfish thinks (chess.com style): shown on the board at once, played one per turn
-  // as soon as Stockfish has moved. If one is illegal by then, the whole queue is dropped.
+  // Moves queued while Stockfish thinks (chess.com style): shown on the board at once and sent to the server,
+  // which plays them one per turn the moment Stockfish has moved. If one is illegal by then, all are dropped.
   const [premoves, setPremoves] = useState([])
+  // dirty: the local queue has changes the server hasn't seen yet. start: the server's ply for the queue's head.
+  const premoveSyncRef = useRef({ dirty: false, start: null })
   const [sound, setSound] = useState(soundEnabled)
   // Browsing the live game's earlier positions (← → Home End, or a click in the move list); null = the live position.
   const [historyPly, setHistoryPly] = useState(null)
-  const premoveBusyRef = useRef(false)
   const engineTurnRef = useRef(false)
   // { fromCol, fromRow, toCol, toRow, id }: the piece on the target square slides in from its origin.
   const [slide, setSlide] = useState(null)
@@ -449,7 +455,7 @@ export default function App() {
   const shownStep = !game ? null
     : !game.analysisMode ? (viewingHistory
       ? { scope: 'live', n: historyPly, move: lastMove, san: historyFrame.san }
-      : { scope: 'live', n: plyCount + (liveOptimistic ? 1 : 0), move: lastMove, san: lastSan(game.displayMoves) })
+      : { scope: 'live', n: plyCount + (liveOptimistic ? 1 : 0), move: lastMove, san: lastSan(game.displayMoves), before: liveOptimistic ? null : liveHistory[plyCount - 1] })
     : previewPly ? { scope: `line@${reviewPly}`, n: linePreview.index + 1, move: lastMove, san: previewPly.san }
     : explorePending || explorePly ? { scope: `explore@${reviewPly}`, n: exploreBase + (explorePending ? 1 : 0), move: lastMove, san: explorePending ? null : explorePly.san }
     : { scope: 'review', n: reviewPly, move: reviewPly >= 0 ? uciSquares(reviewFrame?.playedMove) : null, san: reviewFrame?.san }
@@ -466,7 +472,16 @@ export default function App() {
     // One step back (← in a game or review, or leaving a line for the review position): the last move slides back.
     const backToReview = shownStep.scope === 'review' && previous.scope.endsWith(`@${shownStep.n}`) && previous.n === 1
     const retreated = Boolean(previous.move) && ((previous.scope === shownStep.scope && shownStep.n === previous.n - 1) || backToReview)
-    if (advanced) {
+    // Stockfish's move and your premove in one go: your piece is already drawn on its square, so Stockfish's slides.
+    const engineThenPremove = shownStep.scope === 'live' && previous.scope === 'live' && shownStep.n === previous.n + 2
+      && shownStep.before?.move && shownStep.move && !sameSquare(
+        { col: shownStep.before.move.toCol, row: shownStep.before.move.toRow },
+        { col: shownStep.move.toCol, row: shownStep.move.toRow })
+    if (engineThenPremove) {
+      setSlide({ id: ++slideCounter, list: moveSlides(shownStep.before.move, boardPieces, false) })
+      const sans = `${shownStep.before.san ?? ''} ${shownStep.san ?? ''}`
+      playSound(/[+#]/.test(sans) ? 'check' : shownPieceCount < previous.count || sans.includes('x') ? 'capture' : 'move')
+    } else if (advanced) {
       setSlide(dragged ? null : { id: ++slideCounter, list: moveSlides(shownStep.move, boardPieces, false) })
       const san = shownStep.san ?? ''
       playSound(/[+#]/.test(san) ? 'check' : shownPieceCount < previous.count || san.includes('x') ? 'capture' : 'move')
@@ -478,42 +493,51 @@ export default function App() {
     }
   }, [shownStep?.scope, shownStep?.n])
 
-  // The first queued premove is played the moment Stockfish has moved, if it is legal; otherwise the queue is dropped.
+  // Your own premoves, changed locally: the server gets the whole queue once your own move (if any) has landed,
+  // so it can never be taken for that move.
+  function changePremoves(update) {
+    premoveSyncRef.current.dirty = true
+    setPremoves(update)
+  }
+
   useEffect(() => {
-    if (!premoves.length || !game) return
-    if (game.analysisMode || !game.active || game.humanVsHuman || game.awaitingStart) {
-      setPremoves([])
-      return
-    }
-    if (engineTurn || pending || game.turn !== myColor || premoveBusyRef.current) return
-    premoveBusyRef.current = true
-    const [next, ...rest] = premoves
-    setPremoves(rest)
-    const origin = { col: next.fromCol, row: next.fromRow }
-    const target = { col: next.toCol, row: next.toRow }
-    fetchLegalMoves(origin)
-      .then(async moves => {
-        if (!moves.some(move => sameSquare(move, target))) {
-          setPremoves([])
-          return
-        }
-        draggedRef.current = true // the piece is already shown on its target: no slide
-        const played = await submitMove(origin, target, next.promotion ?? undefined, { quiet: true })
-        if (!played) setPremoves([])
+    const sync = premoveSyncRef.current
+    if (!sync.dirty || pending || !game) return
+    sync.dirty = false
+    const startPly = premoves.length ? sync.start ?? plyCount + (engineTurn ? 1 : 0) : null
+    mutate(() => axios.post('/api/game/premoves', { startPly, moves: premoves }))
+      .then(({ response, current }) => { if (current) applyGameState(response.data) })
+      .catch(err => {
+        setError(formatApiError(err))
+        changePremoves([])
       })
-      .catch(() => setPremoves([]))
-      .finally(() => { premoveBusyRef.current = false })
-  }, [game, premoves, engineTurn, pending])
+  }, [premoves, pending])
+
+  // Nothing to premove for outside a running game against Stockfish (the server drops its queue too).
+  useEffect(() => {
+    if (premoves.length && game && (game.analysisMode || !game.active || game.humanVsHuman || game.awaitingStart)) {
+      premoveSyncRef.current.dirty = false
+      setPremoves([])
+    }
+  }, [game, premoves.length])
 
   function cancelPremoves() {
-    setPremoves([])
+    if (premoves.length) changePremoves([])
     clearSelection()
   }
 
-  // A new move (or a new game, or review) always brings the board back to the live position.
+  // Looking back stays put when Stockfish moves (you hear it); a new game, an import or review returns to the game.
+  const previousMovesKeyRef = useRef(liveMovesKey)
+  useEffect(() => {
+    const previous = previousMovesKeyRef.current
+    previousMovesKeyRef.current = liveMovesKey
+    if (!liveMovesKey.startsWith(previous)) setHistoryPly(null) // a different game
+    else if (historyPly != null && liveMovesKey !== previous) playSound('move')
+  }, [liveMovesKey])
+
   useEffect(() => {
     setHistoryPly(null)
-  }, [plyCount, game?.analysisMode])
+  }, [game?.analysisMode, game?.awaitingStart])
 
   useEffect(() => {
     function browseHistory(event) {
@@ -709,6 +733,13 @@ export default function App() {
 
   function applyGameState(nextGame) {
     setGame(nextGame)
+    // The server's premove queue is the truth (it plays and drops them), unless local changes are still unsent.
+    const sync = premoveSyncRef.current
+    sync.start = nextGame.premoveStartPly ?? null
+    if (!sync.dirty) {
+      const serverQueue = nextGame.premoves ?? []
+      setPremoves(local => samePremoves(local, serverQueue) ? local : serverQueue)
+    }
     if (typeof nextGame.timeMinutes === 'number') setTimeControl(nextGame.timeMinutes)
     if (typeof nextGame.humanVsHuman === 'boolean') setHumanVsHuman(nextGame.humanVsHuman)
     if (typeof nextGame.engineElo === 'number') setEngineElo(nextGame.engineElo)
@@ -888,7 +919,7 @@ export default function App() {
     if (premoveMode) {
       if (!premoveTargets(playPieces, piece).some(move => sameSquare(move, target))) return
       const promotes = piece.name === 'Pawn' && (target.row === 0 || target.row === 7)
-      setPremoves(queue => [...queue, { fromCol: origin.col, fromRow: origin.row, toCol: target.col, toRow: target.row, promotion: promotes ? 'q' : null }])
+      changePremoves(queue => [...queue, { fromCol: origin.col, fromRow: origin.row, toCol: target.col, toRow: target.row, promotion: promotes ? 'q' : null }])
       draggedRef.current = false // the premove is only drawn; Stockfish's reply should still slide
       clearSelection()
       return
@@ -912,7 +943,7 @@ export default function App() {
     submitMove(origin, target)
   }
 
-  async function submitMove(origin, target, promotionPiece, { quiet = false } = {}) {
+  async function submitMove(origin, target, promotionPiece) {
     if (reviewInteractive) {
       exploreMove(origin, target, promotionPiece)
       return
@@ -930,7 +961,7 @@ export default function App() {
       window.requestAnimationFrame(() => window.scrollTo(scrollPosition.left, scrollPosition.top))
       setError(null)
     } catch (err) {
-      if (!quiet) setError(formatApiError(err))
+      setError(formatApiError(err))
       failed = true
     } finally {
       clearSelection()

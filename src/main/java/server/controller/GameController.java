@@ -70,6 +70,12 @@ public class GameController {
         return ResponseEntity.ok(response);
     }
 
+    @PostMapping("/premoves")
+    public GameState premoves(@RequestHeader(value = "X-Chess-Session", required = false) String sessionId,
+                              @RequestBody WebGameService.PremoveRequest request) {
+        return gameService.setPremoves(sessionId, request);
+    }
+
     @GetMapping("/pgn")
     public PgnResponse pgn(@RequestHeader(value = "X-Chess-Session", required = false) String sessionId) {
         return new PgnResponse(gameService.pgn(sessionId));

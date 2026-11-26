@@ -13,6 +13,7 @@ import server.service.WebGameService.InvalidSessionException;
 import server.service.WebGameService.MoveRequest;
 import server.service.WebGameService.NewGameRequest;
 import server.service.WebGameService.PgnImportRequest;
+import server.service.WebGameService.PremoveRequest;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -380,6 +381,62 @@ class WebGameServiceTest {
         String huge = "1. e4 e5 ".repeat(WebGameService.MAX_PGN_CHARS / 9 + 1);
 
         assertThrows(IllegalArgumentException.class, () -> service.importPgn(S1, new PgnImportRequest(huge)));
+    }
+
+    @Test
+    void premoveIsPlayedByTheServerAsSoonAsStockfishHasMoved() throws Exception {
+        service = newService(fakeEngine(300), 2);
+        service.startGame(S1, new NewGameRequest(null, false, false, null));
+        service.move(S1, new MoveRequest(4, 6, 4, 4)); // e4; Stockfish thinks about e5
+
+        // Nf3, queued while Stockfish thinks: it belongs at ply 2.
+        GameState queued = service.setPremoves(S1, new PremoveRequest(2, List.of(new MoveRequest(6, 7, 5, 5))));
+        assertEquals(1, queued.premoves().size());
+        assertEquals(2, queued.premoveStartPly());
+
+        waitFor(() -> service.state(S1).uciMoves().size() >= 3, "premove played after the engine reply");
+        GameState state = service.state(S1);
+        assertEquals(List.of("e2e4", "e7e5", "g1f3"), state.uciMoves().subList(0, 3));
+        assertTrue(state.premoves().isEmpty());
+    }
+
+    @Test
+    void premoveQueuedForALaterPlyWaitsAndAStaleOneIsDropped() throws Exception {
+        service = newService(fakeEngine(0), 2);
+        service.startGame(S1, new NewGameRequest(null, false, false, null));
+        service.move(S1, new MoveRequest(4, 6, 4, 4));
+        waitFor(() -> service.state(S1).uciMoves().size() == 2, "engine reply");
+
+        // Sent while our own move to ply 3 is still on its way: it must not be played as that move.
+        GameState waiting = service.setPremoves(S1, new PremoveRequest(4, List.of(new MoveRequest(6, 7, 5, 5))));
+        assertEquals(2, waiting.uciMoves().size());
+        assertEquals(1, waiting.premoves().size());
+
+        GameState stale = service.setPremoves(S1, new PremoveRequest(0, List.of(new MoveRequest(6, 7, 5, 5))));
+        assertEquals(2, stale.uciMoves().size());
+        assertTrue(stale.premoves().isEmpty());
+    }
+
+    @Test
+    void illegalPremoveDropsTheWholeQueue() throws Exception {
+        service = newService(fakeEngine(0), 2);
+        service.startGame(S1, new NewGameRequest(null, false, false, null));
+        service.move(S1, new MoveRequest(4, 6, 4, 4));
+        waitFor(() -> service.state(S1).uciMoves().size() == 2, "engine reply");
+
+        // e2-e4 again: the pawn is gone.
+        GameState state = service.setPremoves(S1, new PremoveRequest(2,
+            List.of(new MoveRequest(4, 6, 4, 4), new MoveRequest(6, 7, 5, 5))));
+        assertEquals(2, state.uciMoves().size());
+        assertTrue(state.premoves().isEmpty());
+    }
+
+    @Test
+    void premovesAreIgnoredInLocalGames() {
+        service = newService(null, 0);
+        GameState state = service.setPremoves(S1, new PremoveRequest(0, List.of(new MoveRequest(4, 6, 4, 4))));
+        assertTrue(state.premoves().isEmpty());
+        assertTrue(state.uciMoves().isEmpty());
     }
 
     private WebGameService newService(Path engine, int maxEngineSessions) {

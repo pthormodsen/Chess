@@ -16,6 +16,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Semaphore;
@@ -161,6 +162,10 @@ public class WebGameService {
         return session(sessionId).move(request);
     }
 
+    public GameState setPremoves(String sessionId, PremoveRequest request) {
+        return session(sessionId).setPremoves(request);
+    }
+
     public List<Board.SquareView> legalMoves(String sessionId, int col, int row) {
         return session(sessionId).legalMoves(col, row);
     }
@@ -302,8 +307,9 @@ public class WebGameService {
 
     private static final String SETUP_STATUS_ENGINE = "Choose your settings, then press Start game.";
     private static final String SETUP_STATUS_LOCAL = "Press Start game or make the first move.";
-    // Games vs Stockfish have no clock; this only sets how long the engine takes per move (Board's 10-minute pace).
+    // Games vs Stockfish have no clock (their pace comes from main.EngineTempo); this is only the nominal time control.
     private static final int ENGINE_GAME_PACE_MINUTES = 10;
+    private static final int MAX_PREMOVES = 32;
 
     private final class GameSession {
         private final Board board;
@@ -329,6 +335,10 @@ public class WebGameService {
         // Bumped by resetAnalysis so results of an abandoned analysis are not shown.
         private long analysisGeneration;
         private boolean disposed;
+        // Moves queued while Stockfish thinks. The head is played the moment the game reaches premoveStartPly
+        // plies (Stockfish has replied); each later one two plies after the previous. An illegal one drops all.
+        private final List<MoveRequest> premoves = new ArrayList<>();
+        private int premoveStartPly;
 
         GameSession() {
             // Engine moves and analysis results are applied under this session's lock, never on the Swing EDT.
@@ -336,6 +346,7 @@ public class WebGameService {
                 synchronized (this) {
                     if(!disposed){
                         task.run();
+                        playQueuedPremove(); // Stockfish has just moved: your premove goes in at once
                     }
                 }
             });
@@ -430,6 +441,7 @@ public class WebGameService {
 
         /** Fresh starting position: timed for two players, untimed against Stockfish. */
         private void resetBoard() {
+            premoves.clear();
             if(humanVsHuman){
                 board.startNewGame();
             } else {
@@ -512,7 +524,9 @@ public class WebGameService {
                 analysisReport,
                 AnalysisSummaryView.from(analysisSummary),
                 AnalysisEntryView.from(analysisSummary != null ? analysisSummary.entries : partialEntries),
-                analysisFrame
+                analysisFrame,
+                List.copyOf(premoves),
+                premoves.isEmpty() ? null : premoveStartPly
             );
         }
 
@@ -538,6 +552,60 @@ public class WebGameService {
                 board.setEngineOnHold(false);
             }
             return new MoveResponse(legal, legal ? null : "Illegal move", state());
+        }
+
+        /** Replaces the premove queue (empty clears it) and plays its head right away if Stockfish already moved. */
+        synchronized GameState setPremoves(PremoveRequest request) {
+            ensureOpen();
+            premoves.clear();
+            List<MoveRequest> moves = request == null || request.moves() == null ? List.of() : request.moves();
+            if(moves.size() > MAX_PREMOVES){
+                throw new IllegalArgumentException("At most " + MAX_PREMOVES + " premoves can be queued.");
+            }
+            for(MoveRequest move : moves){
+                if(move == null){
+                    throw new IllegalArgumentException("Premove is required.");
+                }
+                parsePromotion(move.promotion());
+            }
+            if(!moves.isEmpty() && request.startPly() != null && premovesAllowed()){
+                premoves.addAll(moves);
+                premoveStartPly = request.startPly();
+                playQueuedPremove();
+            }
+            return state();
+        }
+
+        private boolean premovesAllowed() {
+            return !humanVsHuman && !awaitingStart && board.isGameActive() && !board.isGameOver() && !board.isAnalysisMode();
+        }
+
+        private void playQueuedPremove() {
+            if(premoves.isEmpty()){
+                return;
+            }
+            if(!premovesAllowed()){
+                premoves.clear();
+                return;
+            }
+            if(board.isEngineTurn()){
+                return;
+            }
+            int plies = board.getMoveHistorySnapshot().size();
+            if(plies < premoveStartPly){
+                return; // your own move (or Stockfish's reply) has not landed yet
+            }
+            if(plies > premoveStartPly){
+                premoves.clear(); // the queue belongs to a position that has passed
+                return;
+            }
+            MoveRequest next = premoves.remove(0);
+            boolean legal = board.playMove(next.fromCol(), next.fromRow(), next.toCol(), next.toRow(), parsePromotion(next.promotion()));
+            if(legal){
+                premoveStartPly += 2;
+            } else {
+                premoves.clear();
+            }
         }
 
         synchronized List<Board.SquareView> legalMoves(int col, int row) {
@@ -569,6 +637,7 @@ public class WebGameService {
                 throw new CapacityException("The server is busy analyzing other games. Try again in a minute.");
             }
             holdsAnalysisSlot = true;
+            premoves.clear();
             final long generation = ++analysisGeneration;
             analysisStatus = "running";
             analysisReport = List.of("Analyzing game...");
@@ -613,6 +682,7 @@ public class WebGameService {
             }
 
             boolean wasHumanVsHuman = humanVsHuman;
+            premoves.clear();
             resetAnalysis("Imported " + moves.size() + " ply from PGN. Press Analyze to review it.");
             board.setHumanVsHuman(true);
             // Replayed moves are history, not play: the imported game has no running clock.
@@ -747,6 +817,9 @@ public class WebGameService {
         }
     }
 
+    /** The whole premove queue; {@code startPly} is the ply count at which its first move should be played. */
+    public record PremoveRequest(Integer startPly, List<MoveRequest> moves) {}
+
     public record MoveResponse(boolean legal, String error, GameState state) {}
 
     public record PgnImportRequest(String pgn) {}
@@ -783,7 +856,9 @@ public class WebGameService {
         List<String> analysisReport,
         AnalysisSummaryView analysisSummary,
         List<AnalysisEntryView> analysisEntries,
-        AnalysisFrameView analysisFrame
+        AnalysisFrameView analysisFrame,
+        List<MoveRequest> premoves,
+        Integer premoveStartPly
     ) {}
 
     public record AnalysisProgressView(int done, int total) {}
