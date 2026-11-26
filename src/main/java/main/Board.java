@@ -1447,6 +1447,9 @@ public class Board extends JPanel {
     }
 
     private Duration dynamicEngineThinkTime(){
+        if(untimed){
+            return EngineTempo.thinkTime(moveHistory, engineElo, ThreadLocalRandom.current());
+        }
         long baseMillis = engineThinkTime.toMillis();
         double timeFactor = timeControlFactor();
         long jitter = ThreadLocalRandom.current().nextLong(-220, 381);
