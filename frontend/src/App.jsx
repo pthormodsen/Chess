@@ -36,6 +36,12 @@ function formatApiError(err) {
   return err.message
 }
 
+function squareMap(pieces) {
+  const map = new Map()
+  for (const piece of pieces ?? []) map.set(`${piece.col},${piece.row}`, piece)
+  return map
+}
+
 // Pieces after a move, for showing an explored move at once while Stockfish judges it.
 // Handles castling (the rook moves too), en passant and promotion, so the board is right immediately.
 function withMoveApplied(pieces, move) {
@@ -384,22 +390,20 @@ export default function App() {
   const historyFrame = viewingHistory ? liveHistory[historyPly] : null
   const positionPieces = previewPly ? piecesFromFen(previewPly.fen)
     : explorePly ? piecesFromFen(explorePly.fen)
-    : historyFrame ? piecesFromFen(historyFrame.fen)
     : game?.pieces
-  const liveOptimistic = optimisticMove && !game?.analysisMode && !viewingHistory ? optimisticMove : null
+  const liveOptimistic = optimisticMove && !game?.analysisMode ? optimisticMove : null
   const livePieces = liveOptimistic ? withMoveApplied(positionPieces, liveOptimistic) : positionPieces
-  const premoveActive = premoves.length > 0 && !game?.analysisMode && !viewingHistory
-  const boardPieces = explorePending ? withMoveApplied(positionPieces, explorePending)
+  const premoveActive = premoves.length > 0 && !game?.analysisMode
+  // The position moves and premoves act on. While looking back it differs from what is shown: touching
+  // one of your pieces then returns to the game and picks that piece up there (premoves included).
+  const playPieces = explorePending ? withMoveApplied(positionPieces, explorePending)
     : premoveActive ? premoves.reduce(withMoveApplied, livePieces)
     : livePieces
+  const historyPieces = useMemo(() => historyFrame ? piecesFromFen(historyFrame.fen) : null, [historyFrame])
+  const boardPieces = historyPieces ?? playPieces
 
-  const piecesBySquare = useMemo(() => {
-    const map = new Map()
-    for (const piece of boardPieces ?? []) {
-      map.set(`${piece.col},${piece.row}`, piece)
-    }
-    return map
-  }, [boardPieces])
+  const playBySquare = useMemo(() => squareMap(playPieces), [playPieces])
+  const piecesBySquare = useMemo(() => historyPieces ? squareMap(historyPieces) : playBySquare, [historyPieces, playBySquare])
 
   const balance = materialBalance(game?.pieces)
   const whiteCaptures = splitCaptures(game?.capturedByWhite)
@@ -726,7 +730,6 @@ export default function App() {
     if (reviewInteractive) {
       return Boolean(piece && interactiveFen && !explorePending && !promotion && piece.color === interactiveTurn)
     }
-    if (viewingHistory) return false
     if (premoveMode) return Boolean(piece && !promotion && piece.color === myColor)
     const waitingForStart = game?.awaitingStart && !game?.humanVsHuman
     return Boolean(piece && game?.active && !pending && !promotion && !game?.analysisMode && !engineTurn && !waitingForStart && piece.color === game?.turn)
@@ -863,7 +866,7 @@ export default function App() {
     const requestId = ++legalRequestRef.current
     if (premoveMode) {
       setSelected(origin)
-      setLegalFor({ origin, moves: premoveTargets(boardPieces, piece) })
+      setLegalFor({ origin, moves: premoveTargets(playPieces, piece) })
       return
     }
     setSelected(origin)
@@ -879,11 +882,11 @@ export default function App() {
   // Validates a from→to pair against the legal targets of that exact origin, then asks for a promotion piece if needed.
   async function attemptMove(origin, target) {
     if (sameSquare(origin, target)) return
-    const piece = piecesBySquare.get(`${origin.col},${origin.row}`)
+    const piece = playBySquare.get(`${origin.col},${origin.row}`)
     if (!canMovePiece(piece)) return
 
     if (premoveMode) {
-      if (!premoveTargets(boardPieces, piece).some(move => sameSquare(move, target))) return
+      if (!premoveTargets(playPieces, piece).some(move => sameSquare(move, target))) return
       const promotes = piece.name === 'Pawn' && (target.row === 0 || target.row === 7)
       setPremoves(queue => [...queue, { fromCol: origin.col, fromRow: origin.row, toCol: target.col, toRow: target.row, promotion: promotes ? 'q' : null }])
       draggedRef.current = false // the premove is only drawn; Stockfish's reply should still slide
@@ -945,15 +948,17 @@ export default function App() {
       if (pending || promotion || explorePending) return
     } else {
       if (viewingHistory) {
-        // A click on the board while looking back returns to the game.
+        // A click on the board while looking back returns to the game; on one of your pieces it also picks it up.
         setHistoryPly(null)
         clearSelection()
+        const livePiece = playBySquare.get(`${col},${row}`)
+        if (canMovePiece(livePiece)) selectPiece(livePiece)
         return
       }
       if (premoveMode && !promotion) {
         // Premoving: a target queues the move, your own piece is picked up, anything else cancels every premove.
         const square = { col, row }
-        const piece = piecesBySquare.get(`${col},${row}`)
+        const piece = playBySquare.get(`${col},${row}`)
         if (selected && legalMoves.some(move => sameSquare(move, square))) attemptMove(selected, square)
         else if (sameSquare(selected, square)) clearSelection()
         else if (piece?.color === myColor) selectPiece(piece)
@@ -998,8 +1003,15 @@ export default function App() {
   }
 
   // Pointer events (mouse, touch and pen) replace HTML5 drag-and-drop, which mobile browsers don't support.
-  function handlePiecePointerDown(event, piece) {
-    if (event.button !== 0 || !canMovePiece(piece)) return
+  function handlePiecePointerDown(event, shownPiece) {
+    if (event.button !== 0) return
+    // Looking back: grab your piece on that square in the game itself, and return to the game.
+    const piece = viewingHistory ? playBySquare.get(`${shownPiece.col},${shownPiece.row}`) : shownPiece
+    if (!canMovePiece(piece)) return
+    if (viewingHistory) {
+      setHistoryPly(null)
+      clearSelection()
+    }
     dragRef.current = {
       pointerId: event.pointerId,
       piece,
@@ -1337,12 +1349,12 @@ export default function App() {
                 )
                 const reviewBadgeHere = reviewMeta && reviewPlayedMove && reviewPlayedMove.toCol === col && reviewPlayedMove.toRow === row
                 const reviewTintHere = reviewMeta && reviewPlayedMove && (reviewBadgeHere || (reviewPlayedMove.fromCol === col && reviewPlayedMove.fromRow === row))
-                const movable = canMovePiece(piece)
+                const movable = canMovePiece(viewingHistory ? playBySquare.get(`${col},${row}`) : piece)
                 const draggingHere = dragGhost && sameSquare(dragGhost.piece, square)
                 const slideHere = slide?.list.find(item => item.toCol === col && item.toRow === row)
                 const endMark = endMarks[`${col},${row}`]
                 const checkHere = checked && piece?.name === 'King' && piece.color === checked
-                const premoveHere = premoveActive && premoves.some(item => (item.fromCol === col && item.fromRow === row) || (item.toCol === col && item.toRow === row))
+                const premoveHere = premoveActive && !viewingHistory && premoves.some(item => (item.fromCol === col && item.fromRow === row) || (item.toCol === col && item.toRow === row))
                 const slideStyle = slideHere ? {
                   '--slide-x': `${((flipped ? 7 - slideHere.fromCol : slideHere.fromCol) - displayCol) * 100}%`,
                   '--slide-y': `${((flipped ? 7 - slideHere.fromRow : slideHere.fromRow) - displayRow) * 100}%`
