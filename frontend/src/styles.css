@@ -390,6 +390,111 @@ h2 {
   background: rgba(255, 238, 79, 0.48);
 }
 
+/* King in check: a red glow on its square (under the piece, over last-move colours). */
+.square.in-check::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle, rgba(255, 70, 60, 0.95) 0%, rgba(230, 40, 40, 0.75) 40%, rgba(200, 20, 20, 0) 78%);
+}
+
+/* Game over: the kings' squares tinted, with a corner badge and a label that fades out. */
+.square.game-end {
+  z-index: 5;
+  overflow: visible;
+}
+
+.square.game-end.mated::before,
+.square.game-end.winner::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+
+.square.game-end.mated::before {
+  background: rgba(224, 40, 40, 0.8);
+}
+
+.square.game-end.winner::before {
+  background: rgba(129, 182, 76, 0.8);
+}
+
+.end-badge {
+  position: absolute;
+  top: 3%;
+  right: 3%;
+  z-index: 7;
+  width: 34%;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #ffffff;
+  font-size: calc(var(--board-size) * 0.028);
+  font-weight: 900;
+  line-height: 1;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  animation: badge-pop 260ms cubic-bezier(0.3, 1.6, 0.5, 1);
+}
+
+.end-badge svg {
+  width: 66%;
+  height: 66%;
+}
+
+.end-badge.winner {
+  background: var(--green);
+}
+
+.end-badge.mated {
+  background: #e02828;
+}
+
+.end-badge.draw {
+  background: #8b8780;
+}
+
+.end-label {
+  position: absolute;
+  top: 4%;
+  left: 50%;
+  z-index: 8;
+  padding: 2px 8px;
+  border-radius: 999px;
+  color: #ffffff;
+  font-size: calc(var(--board-size) * 0.019);
+  font-weight: 800;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  transform: translateX(-50%);
+  animation: end-label 3.2s ease-out forwards;
+  pointer-events: none;
+}
+
+.end-label.winner {
+  background: var(--green);
+}
+
+.end-label.mated {
+  background: #e02828;
+}
+
+.end-label.draw {
+  background: #6f6a61;
+}
+
+@keyframes end-label {
+  0% { opacity: 0; transform: translate(-50%, 30%); }
+  10%, 75% { opacity: 1; transform: translate(-50%, 0); }
+  100% { opacity: 0; transform: translate(-50%, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .end-label {
+    display: none;
+  }
+}
+
 /* A queued premove: both squares tinted until it is played or cancelled. */
 .square.premove::before {
   content: "";

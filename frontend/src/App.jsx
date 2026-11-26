@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import axios from 'axios'
+import { Chess } from 'chess.js'
 import { PieceIcon, pieceFromSymbol } from './pieces.jsx'
 import { BoardArrow } from './board.jsx'
 import { playSound } from './sounds.js'
@@ -63,6 +64,51 @@ function withMoveApplied(pieces, move) {
 }
 
 let slideCounter = 0
+
+const FEN_LETTERS = { Pawn: 'p', Knight: 'n', Bishop: 'b', Rook: 'r', Queen: 'q', King: 'k' }
+
+/** A FEN good enough to ask "in check? mated?" (no castling or en-passant rights: neither can answer a check... except e.p., rarely). */
+function fenFromPieces(pieces, turn) {
+  const grid = Array.from({ length: 8 }, () => Array(8).fill(null))
+  for (const piece of pieces ?? []) {
+    const letter = FEN_LETTERS[piece.name]
+    if (letter) grid[piece.row][piece.col] = piece.color === 'white' ? letter.toUpperCase() : letter
+  }
+  const placement = grid.map(rank => {
+    let out = ''
+    let empty = 0
+    for (const cell of rank) {
+      if (cell) {
+        out += (empty || '') + cell
+        empty = 0
+      } else {
+        empty += 1
+      }
+    }
+    return out + (empty || '')
+  }).join('/')
+  return `${placement} ${turn === 'black' ? 'b' : 'w'} - - 0 1`
+}
+
+/** { checked: 'white'|'black'|null, mated: boolean } for a position, or nulls if the FEN is unusable. */
+function checkState(fen) {
+  if (!fen) return { checked: null, mated: false }
+  try {
+    const chess = new Chess(fen)
+    const side = chess.turn() === 'w' ? 'white' : 'black'
+    return { checked: chess.inCheck() ? side : null, mated: chess.isCheckmate() }
+  } catch (ignored) {
+    return { checked: null, mated: false }
+  }
+}
+
+function CrownIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path fill="currentColor" d="M3 8.5l4.5 3.5L12 5l4.5 7L21 8.5 19.2 18H4.8z" />
+    </svg>
+  )
+}
 
 /**
  * Premove targets: where this piece could go once the opponent has moved. Only your own pieces block
@@ -1055,6 +1101,25 @@ export default function App() {
         ? 'Engine thinking…'
         : game?.status ?? 'Loading board'
   const result = game?.result && game.result !== '*' ? game.result : null
+
+  // Check and game-end marks on the kings, chess.com style: a red king square in check; at the end a badge on
+  // each king (crown for the winner, # for the mated king, ½ for a draw) with a short label that fades out.
+  const shownFen = game?.analysisMode
+    ? (previewPly ? previewPly.fen : explorePending ? null : explorePly ? explorePly.fen : reviewFrame?.positionFen)
+    : game && !liveOptimistic ? fenFromPieces(positionPieces, game.turn) : null
+  const { checked, mated } = useMemo(() => checkState(shownFen), [shownFen])
+  const liveEnd = Boolean(game && !game.analysisMode && game.gameOver && result)
+  const endMarks = {}
+  if (liveEnd || mated) {
+    const outcome = liveEnd ? result : (checked === 'white' ? '0-1' : '1-0')
+    const winner = outcome === '1-0' ? 'white' : outcome === '0-1' ? 'black' : null
+    for (const piece of boardPieces ?? []) {
+      if (piece.name !== 'King') continue
+      if (!winner) endMarks[`${piece.col},${piece.row}`] = { tone: 'draw', label: 'Draw' }
+      else if (piece.color === winner) endMarks[`${piece.col},${piece.row}`] = { tone: 'winner', label: 'Winner' }
+      else if (mated) endMarks[`${piece.col},${piece.row}`] = { tone: 'mated', label: 'Checkmate' }
+    }
+  }
   const inReview = Boolean(game?.analysisMode)
   // Setup is open before the first move and tucked away once the game is under way, unless the player toggles it.
   const showSetup = settingsOpen ?? Boolean(game ? game.awaitingStart : plyCount === 0)
@@ -1153,6 +1218,8 @@ export default function App() {
                 const movable = canMovePiece(piece)
                 const draggingHere = dragGhost && sameSquare(dragGhost.piece, square)
                 const slideHere = slide && slide.toCol === col && slide.toRow === row
+                const endMark = endMarks[`${col},${row}`]
+                const checkHere = checked && piece?.name === 'King' && piece.color === checked
                 const premoveHere = premoveActive && premoves.some(item => (item.fromCol === col && item.fromRow === row) || (item.toCol === col && item.toRow === row))
                 const slideStyle = slideHere ? {
                   '--slide-x': `${((flipped ? 7 - slide.fromCol : slide.fromCol) - displayCol) * 100}%`,
@@ -1173,7 +1240,9 @@ export default function App() {
                       move?.capture ? 'can-capture' : '',
                       move && !move.capture ? 'can-move' : '',
                       slideHere ? 'slide-target' : '',
-                      premoveHere ? 'premove' : ''
+                      premoveHere ? 'premove' : '',
+                      checkHere ? 'in-check' : '',
+                      endMark ? `game-end ${endMark.tone}` : ''
                     ].filter(Boolean).join(' ')}
                     style={reviewTintHere ? { '--class-color': reviewMeta.color } : undefined}
                     onClick={() => handleSquareClick(col, row)}
@@ -1181,6 +1250,14 @@ export default function App() {
                   >
                     {displayCol === 0 && <span className="rank-label">{8 - row}</span>}
                     {displayRow === 7 && <span className="file-label">{files[col]}</span>}
+                    {endMark && (
+                      <>
+                        <span className={`end-badge ${endMark.tone}`} aria-label={endMark.label}>
+                          {endMark.tone === 'winner' ? <CrownIcon /> : endMark.tone === 'mated' ? '#' : '½'}
+                        </span>
+                        <span className={`end-label ${endMark.tone}`} aria-hidden="true">{endMark.label}</span>
+                      </>
+                    )}
                     {reviewBadgeHere && (
                       <span className="review-badge">
                         <ClassIcon tag={badgeTag} size={28} />
