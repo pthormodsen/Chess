@@ -390,6 +390,14 @@ h2 {
   background: rgba(255, 238, 79, 0.48);
 }
 
+/* A queued premove: both squares tinted until it is played or cancelled. */
+.square.premove::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(214, 86, 74, 0.55);
+}
+
 .square.can-move::after {
   content: "";
   position: absolute;
