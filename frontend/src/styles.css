@@ -1067,6 +1067,30 @@ button:focus-visible {
   font-weight: 650;
 }
 
+button.move-san {
+  background: transparent;
+  cursor: pointer;
+}
+
+button.move-san:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.back-to-live {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--panel-raised);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.back-to-live:hover {
+  background: #45423d;
+  color: var(--text-strong);
+}
+
 .move-san.current {
   background: #4a4741;
   color: var(--text-strong);

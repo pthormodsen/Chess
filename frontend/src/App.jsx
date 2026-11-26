@@ -277,6 +277,8 @@ export default function App() {
   // Moves queued while Stockfish thinks (chess.com style): shown on the board at once, played one per turn
   // as soon as Stockfish has moved. If one is illegal by then, the whole queue is dropped.
   const [premoves, setPremoves] = useState([])
+  // Browsing the live game's earlier positions (← → Home End, or a click in the move list); null = the live position.
+  const [historyPly, setHistoryPly] = useState(null)
   const premoveBusyRef = useRef(false)
   const engineTurnRef = useRef(false)
   // { fromCol, fromRow, toCol, toRow, id }: the piece on the target square slides in from its origin.
@@ -327,10 +329,30 @@ export default function App() {
   const reviewInteractive = Boolean(game?.analysisMode) && reviewStage === 'moves' && !previewPly
   const interactiveFen = reviewInteractive ? (explorePly ? explorePly.fen : reviewFrame?.positionFen ?? null) : null
   const interactiveTurn = interactiveFen ? (interactiveFen.split(' ')[1] === 'w' ? 'white' : 'black') : null
-  const positionPieces = previewPly ? piecesFromFen(previewPly.fen) : explorePly ? piecesFromFen(explorePly.fen) : game?.pieces
-  const liveOptimistic = optimisticMove && !game?.analysisMode ? optimisticMove : null
+  // Every position of the live game, replayed from its UCI moves: [{ fen, move, san }], index = plies played.
+  const liveMovesKey = (game?.uciMoves ?? []).join(' ')
+  const liveHistory = useMemo(() => {
+    const chess = new Chess()
+    const frames = [{ fen: chess.fen(), move: null, san: null }]
+    for (const uci of game?.uciMoves ?? []) {
+      try {
+        const played = chess.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] })
+        frames.push({ fen: chess.fen(), move: uciSquares(uci), san: played.san })
+      } catch (ignored) {
+        break
+      }
+    }
+    return frames
+  }, [liveMovesKey])
+  const viewingHistory = historyPly != null && !game?.analysisMode && historyPly < liveHistory.length - 1
+  const historyFrame = viewingHistory ? liveHistory[historyPly] : null
+  const positionPieces = previewPly ? piecesFromFen(previewPly.fen)
+    : explorePly ? piecesFromFen(explorePly.fen)
+    : historyFrame ? piecesFromFen(historyFrame.fen)
+    : game?.pieces
+  const liveOptimistic = optimisticMove && !game?.analysisMode && !viewingHistory ? optimisticMove : null
   const livePieces = liveOptimistic ? withMoveApplied(positionPieces, liveOptimistic) : positionPieces
-  const premoveActive = premoves.length > 0 && !game?.analysisMode
+  const premoveActive = premoves.length > 0 && !game?.analysisMode && !viewingHistory
   const boardPieces = explorePending ? withMoveApplied(positionPieces, explorePending)
     : premoveActive ? premoves.reduce(withMoveApplied, livePieces)
     : livePieces
@@ -349,6 +371,7 @@ export default function App() {
   const lastMove = previewPly ? uciSquares(previewPly.uci)
     : explorePending ? explorePending
     : explorePly ? uciSquares(explorePly.uci)
+    : historyFrame ? historyFrame.move
     : liveOptimistic ? liveOptimistic
     : game?.lastMove
   const disconnected = connectionError && !game
@@ -384,7 +407,9 @@ export default function App() {
   // step advances by exactly one within the same line (live game, review, best line, your own line).
   const exploreBase = exploring ? explore.index + 1 : 0
   const shownStep = !game ? null
-    : !game.analysisMode ? { scope: 'live', n: plyCount + (liveOptimistic ? 1 : 0), move: lastMove, san: lastSan(game.displayMoves) }
+    : !game.analysisMode ? (viewingHistory
+      ? { scope: 'live', n: historyPly, move: lastMove, san: historyFrame.san }
+      : { scope: 'live', n: plyCount + (liveOptimistic ? 1 : 0), move: lastMove, san: lastSan(game.displayMoves) })
     : previewPly ? { scope: `line@${reviewPly}`, n: linePreview.index + 1, move: lastMove, san: previewPly.san }
     : explorePending || explorePly ? { scope: `explore@${reviewPly}`, n: exploreBase + (explorePending ? 1 : 0), move: lastMove, san: explorePending ? null : explorePly.san }
     : { scope: 'review', n: reviewPly, move: reviewPly >= 0 ? uciSquares(reviewFrame?.playedMove) : null, san: reviewFrame?.san }
@@ -438,6 +463,36 @@ export default function App() {
     setPremoves([])
     clearSelection()
   }
+
+  // A new move (or a new game, or review) always brings the board back to the live position.
+  useEffect(() => {
+    setHistoryPly(null)
+  }, [plyCount, game?.analysisMode])
+
+  useEffect(() => {
+    function browseHistory(event) {
+      const target = event.target
+      const tagName = target?.tagName?.toLowerCase()
+      if (tagName === 'input' || tagName === 'select' || tagName === 'textarea' || target?.isContentEditable) return
+      if (modeRef.current !== 'play' || !game || game.analysisMode || confirmHome || promotion) return
+      if (event.altKey || event.metaKey || event.ctrlKey) return
+      const last = liveHistory.length - 1
+      if (last <= 0) return
+      const current = historyPly ?? last
+      let next
+      if (event.key === 'ArrowLeft') next = current - 1
+      else if (event.key === 'ArrowRight') next = current + 1
+      else if (event.key === 'Home' || event.key === 'ArrowUp') next = 0
+      else if (event.key === 'End' || event.key === 'ArrowDown') next = last
+      else return
+      event.preventDefault()
+      next = Math.max(0, Math.min(last, next))
+      setHistoryPly(next >= last ? null : next)
+      clearSelection()
+    }
+    window.addEventListener('keydown', browseHistory)
+    return () => window.removeEventListener('keydown', browseHistory)
+  }, [game?.analysisMode, liveHistory, historyPly, confirmHome, promotion])
 
   // Premove targets and real legal moves differ: a selection never carries over when Stockfish's turn starts or ends.
   useEffect(() => {
@@ -629,6 +684,7 @@ export default function App() {
     if (reviewInteractive) {
       return Boolean(piece && interactiveFen && !explorePending && !promotion && piece.color === interactiveTurn)
     }
+    if (viewingHistory) return false
     if (premoveMode) return Boolean(piece && !promotion && piece.color === myColor)
     const waitingForStart = game?.awaitingStart && !game?.humanVsHuman
     return Boolean(piece && game?.active && !pending && !promotion && !game?.analysisMode && !engineTurn && !waitingForStart && piece.color === game?.turn)
@@ -846,6 +902,12 @@ export default function App() {
     if (reviewInteractive) {
       if (pending || promotion || explorePending) return
     } else {
+      if (viewingHistory) {
+        // A click on the board while looking back returns to the game.
+        setHistoryPly(null)
+        clearSelection()
+        return
+      }
       if (premoveMode && !promotion) {
         // Premoving: a target queues the move, your own piece is picked up, anything else cancels every premove.
         const square = { col, row }
@@ -1106,9 +1168,10 @@ export default function App() {
   // each king (crown for the winner, # for the mated king, ½ for a draw) with a short label that fades out.
   const shownFen = game?.analysisMode
     ? (previewPly ? previewPly.fen : explorePending ? null : explorePly ? explorePly.fen : reviewFrame?.positionFen)
+    : historyFrame ? historyFrame.fen
     : game && !liveOptimistic ? fenFromPieces(positionPieces, game.turn) : null
   const { checked, mated } = useMemo(() => checkState(shownFen), [shownFen])
-  const liveEnd = Boolean(game && !game.analysisMode && game.gameOver && result)
+  const liveEnd = Boolean(game && !game.analysisMode && !viewingHistory && game.gameOver && result)
   const endMarks = {}
   if (liveEnd || mated) {
     const outcome = liveEnd ? result : (checked === 'white' ? '0-1' : '1-0')
@@ -1472,10 +1535,14 @@ export default function App() {
               <section className={`moves-section ${showProgress ? 'is-hidden' : ''}`} aria-label="Move history">
                 <div className="section-head">
                   <h2>Moves</h2>
-                  <span>{plyCount} ply</span>
+                  {viewingHistory
+                    ? <button type="button" className="back-to-live" onClick={() => setHistoryPly(null)} title="Back to the game (End)">Back to game ⏭</button>
+                    : <span>{plyCount} ply</span>}
                 </div>
                 <MoveTable
                   displayMoves={game?.displayMoves ?? []}
+                  currentPly={viewingHistory ? historyPly : null}
+                  onSelect={ply => { clearSelection(); setHistoryPly(ply >= liveHistory.length - 1 ? null : ply) }}
                   emptyText={game?.awaitingStart && !game?.humanVsHuman ? 'Press Start game to begin.' : 'Make the first move to start the game.'}
                 />
               </section>
@@ -1639,16 +1706,38 @@ function parseMoveRows(displayMoves) {
   })
 }
 
-function MoveTable({ displayMoves, emptyText }) {
+function MoveTable({ displayMoves, emptyText, currentPly, onSelect }) {
   const listRef = useRef(null)
   const rows = parseMoveRows(displayMoves)
   const lastRow = rows.length - 1
   const lastIsBlack = lastRow >= 0 && Boolean(rows[lastRow].black)
+  // Ply numbers (1 = first move); a game that starts with Black's move has no ply for row 0's white cell.
+  const offset = rows[0]?.white === '…' ? 1 : 0
+  const totalPlies = rows.length * 2 - offset - (lastIsBlack ? 0 : 1)
+  const shownPly = currentPly ?? totalPlies
 
   useEffect(() => {
     const list = listRef.current
     if (list) list.scrollTop = list.scrollHeight
   }, [displayMoves.length, lastIsBlack])
+
+  // Keep the move being looked at in view while browsing.
+  useEffect(() => {
+    const list = listRef.current
+    const cell = list?.querySelector('.move-san.current')
+    if (!list || !cell || currentPly == null) return
+    const top = cell.offsetTop - list.offsetTop
+    if (top < list.scrollTop) list.scrollTop = top - 4
+    else if (top + cell.offsetHeight > list.scrollTop + list.clientHeight) list.scrollTop = top + cell.offsetHeight - list.clientHeight + 4
+  }, [currentPly])
+
+  const cell = (san, ply) => san && san !== '…'
+    ? (
+      <button type="button" className={`move-san ${ply === shownPly ? 'current' : ''}`} onClick={() => onSelect?.(ply)}>
+        {san}
+      </button>
+    )
+    : <span className="move-san">{san ?? ''}</span>
 
   if (!rows.length) {
     return <div className="moves empty">{emptyText}</div>
@@ -1659,8 +1748,8 @@ function MoveTable({ displayMoves, emptyText }) {
       {rows.map((row, index) => (
         <li className="move-row" key={`${row.number}-${index}`}>
           <span className="move-number">{row.number}.</span>
-          <span className={`move-san ${index === lastRow && !lastIsBlack ? 'current' : ''}`}>{row.white}</span>
-          <span className={`move-san ${index === lastRow && lastIsBlack ? 'current' : ''}`}>{row.black ?? ''}</span>
+          {cell(row.white, index * 2 + 1 - offset)}
+          {cell(row.black, index * 2 + 2 - offset)}
         </li>
       ))}
     </ol>
