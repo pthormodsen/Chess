@@ -24,9 +24,12 @@ export function sameSquare(a, b) {
  *  - onMove(origin, target, promotion): a legal move was made
  *  - marks: { 'col,row': className } extra square classes (hints, right/wrong tints)
  *  - arrows: [{ move: {fromCol, fromRow, toCol, toRow}, tone, label }]
+ *  - badge: { col, row, tone: 'right'|'wrong' } a ✓/✕ marker in a square's corner
+ *  - animation: { fromCol, fromRow, toCol, toRow, id } slides the piece on the target square in from its origin
+ *    (a new id replays it). onMove gets { dragged } as a 4th argument, so callers can skip it for drags.
  * Same CSS classes as the game board, so it looks and sizes the same.
  */
-export function ChessBoard({ pieces, flipped, lastMove, canMove, targetsFrom, onMove, marks, arrows, resetKey }) {
+export function ChessBoard({ pieces, flipped, lastMove, canMove, targetsFrom, onMove, marks, arrows, badge, animation, resetKey }) {
   const [selected, setSelected] = useState(null)
   const [dragGhost, setDragGhost] = useState(null)
   const [promotion, setPromotion] = useState(null)
@@ -51,16 +54,16 @@ export function ChessBoard({ pieces, flipped, lastMove, canMove, targetsFrom, on
   const movable = piece => Boolean(piece && !promotion && canMove(piece))
   const targets = selected ? targetsFrom(selected) : []
 
-  function attempt(origin, target) {
+  function attempt(origin, target, dragged = false) {
     if (sameSquare(origin, target)) return false
     const move = targetsFrom(origin).find(item => sameSquare(item, target))
     if (!move) return false
     if (move.promotion) {
-      setPromotion({ origin, target, color: piecesBySquare.get(`${origin.col},${origin.row}`)?.color ?? 'white' })
+      setPromotion({ origin, target, dragged, color: piecesBySquare.get(`${origin.col},${origin.row}`)?.color ?? 'white' })
       return true
     }
     setSelected(null)
-    onMove(origin, target, null)
+    onMove(origin, target, null, { dragged })
     return true
   }
 
@@ -68,7 +71,7 @@ export function ChessBoard({ pieces, flipped, lastMove, canMove, targetsFrom, on
     const pending = promotion
     setPromotion(null)
     setSelected(null)
-    if (pending) onMove(pending.origin, pending.target, letter)
+    if (pending) onMove(pending.origin, pending.target, letter, { dragged: pending.dragged })
   }
 
   function handleSquareClick(col, row) {
@@ -126,7 +129,7 @@ export function ChessBoard({ pieces, flipped, lastMove, canMove, targetsFrom, on
     suppressClickRef.current = true
     window.setTimeout(() => { suppressClickRef.current = false }, 0)
     const target = squareFromPoint(event.clientX, event.clientY)
-    if (!target || !attempt(drag.origin, target)) {
+    if (!target || !attempt(drag.origin, target, true)) {
       // Dropped off the board or on an illegal square: keep the piece selected to try again.
       if (!target || !sameSquare(target, drag.origin)) setSelected(drag.origin)
     }
@@ -156,6 +159,12 @@ export function ChessBoard({ pieces, flipped, lastMove, canMove, targetsFrom, on
           )
           const mark = marks?.[`${col},${row}`]
           const draggingHere = dragGhost && sameSquare(dragGhost.piece, square)
+          const slideHere = animation && animation.toCol === col && animation.toRow === row
+          const slideStyle = slideHere ? {
+            '--slide-x': `${((flipped ? 7 - animation.fromCol : animation.fromCol) - displayCol) * 100}%`,
+            '--slide-y': `${((flipped ? 7 - animation.fromRow : animation.fromRow) - displayRow) * 100}%`
+          } : undefined
+          const badgeHere = badge && badge.col === col && badge.row === row
           return (
             <button
               key={squareName(col, row)}
@@ -167,16 +176,25 @@ export function ChessBoard({ pieces, flipped, lastMove, canMove, targetsFrom, on
                 lastHere && !mark ? 'last-move' : '',
                 mark ?? '',
                 target?.capture ? 'can-capture' : '',
-                target && !target.capture ? 'can-move' : ''
+                target && !target.capture ? 'can-move' : '',
+                slideHere ? 'slide-target' : '',
+                badgeHere ? 'has-badge' : ''
               ].filter(Boolean).join(' ')}
               onClick={() => handleSquareClick(col, row)}
               aria-label={`${squareName(col, row)}${piece ? ` ${piece.color} ${piece.name}` : ''}`}
             >
               {displayCol === 0 && <span className="rank-label">{8 - row}</span>}
               {displayRow === 7 && <span className="file-label">{FILES[col]}</span>}
+              {badgeHere && (
+                <span className={`move-badge ${badge.tone}`} aria-label={badge.tone === 'right' ? 'Correct' : 'Wrong'}>
+                  {badge.tone === 'right' ? '✓' : '✕'}
+                </span>
+              )}
               {piece && (
                 <span
-                  className={['piece', piece.color, movable(piece) ? 'movable' : '', draggingHere ? 'dragging' : ''].filter(Boolean).join(' ')}
+                  key={slideHere ? `slide-${animation.id}` : 'piece'}
+                  style={slideStyle}
+                  className={['piece', piece.color, movable(piece) ? 'movable' : '', draggingHere ? 'dragging' : '', slideHere ? 'sliding' : ''].filter(Boolean).join(' ')}
                   onPointerDown={event => handlePointerDown(event, piece)}
                   onPointerMove={handlePointerMove}
                   onPointerUp={handlePointerUp}
