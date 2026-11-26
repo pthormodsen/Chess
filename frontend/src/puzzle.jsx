@@ -4,7 +4,7 @@ import { Chess } from 'chess.js'
 import { PieceIcon } from './pieces.jsx'
 import { ChessBoard, FILES, squareName } from './board.jsx'
 import { piecesFromFen, uciSquares } from './review.jsx'
-import { moveSound, playSound, setSoundEnabled, soundEnabled } from './sounds.js'
+import { moveSound, playSound } from './sounds.js'
 
 const STATS_KEY = 'chess.puzzles'
 const THEME_KEY = 'chess.puzzleTheme'
@@ -105,7 +105,6 @@ export default function PuzzleTrainer() {
   const [themes, setThemes] = useState([])
   const [showThemes, setShowThemes] = useState(false)
   const [autoNext, setAutoNext] = useState(() => readJson(AUTO_NEXT_KEY, true) !== false)
-  const [sound, setSound] = useState(soundEnabled)
   const [puzzle, setPuzzle] = useState(null)
   // Every position of the line so far: { fen, uci, san } (index 0 = the puzzle's FEN, no move).
   const [positions, setPositions] = useState([])
@@ -281,7 +280,7 @@ export default function PuzzleTrainer() {
     const move = chess.move(splitUci(uci))
     pushPosition(chess, uci, move.san)
     animate(uci)
-    if (withSound) playSound(moveSound(move), sound)
+    if (withSound) playSound(moveSound(move))
     return move
   }
 
@@ -338,7 +337,7 @@ export default function PuzzleTrainer() {
       setPhase('busy')
       setBadge({ ...target, tone: 'wrong' })
       setMessage({ tone: 'wrong', text: `${played.san} isn't it. Try again.` })
-      playSound('wrong', sound)
+      playSound('wrong')
       settle(false)
       later(() => {
         chess.undo()
@@ -356,7 +355,7 @@ export default function PuzzleTrainer() {
       finishSolved()
       return
     }
-    playSound(moveSound(played), sound)
+    playSound(moveSound(played))
     setPhase('busy')
     setMessage({ tone: 'right', text: `${played.san} — keep going` })
     later(() => {
@@ -371,7 +370,7 @@ export default function PuzzleTrainer() {
     const clean = !ratedRef.current
     setPhase('solved')
     settle(true)
-    playSound('solved', sound)
+    playSound('solved')
     setMessage({ tone: 'right', text: clean ? 'Solved!' : 'Solved, but it counted as a miss.' })
     if (clean && autoNext) {
       setAutoPending(true)
@@ -442,7 +441,7 @@ export default function PuzzleTrainer() {
     setView(next === positions.length - 1 ? null : next)
     if (delta > 0 && positions[next].uci) {
       animate(positions[next].uci)
-      playSound('move', sound)
+      playSound('move')
     } else {
       setAnimation(null)
     }
@@ -470,12 +469,6 @@ export default function PuzzleTrainer() {
     setAutoNext(next)
     writeJson(AUTO_NEXT_KEY, next)
     if (!next) cancelAutoNext()
-  }
-
-  function toggleSound() {
-    const next = !sound
-    setSound(next)
-    setSoundEnabled(next)
   }
 
   const lastUci = shown?.uci
@@ -643,7 +636,6 @@ export default function PuzzleTrainer() {
 
           <div className="puzzle-toggles">
             <label><input type="checkbox" checked={autoNext} onChange={toggleAutoNext} /> Next puzzle automatically after a clean solve</label>
-            <label><input type="checkbox" checked={sound} onChange={toggleSound} /> Sound</label>
           </div>
         </div>
       </aside>

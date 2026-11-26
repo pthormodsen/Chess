@@ -2388,6 +2388,47 @@ button.review-move:hover {
 
 /* ---------- Rail navigation (Play / Puzzles) ---------- */
 
+/* Sound on/off: an icon button at the foot of the rail (in the top bar on phones). */
+.rail-sound {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  margin: auto 0 16px;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.rail-sound svg {
+  width: 22px;
+  height: 22px;
+}
+
+.rail-sound:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-strong);
+}
+
+.rail-sound.off {
+  color: var(--faint);
+}
+
+@media (max-width: 920px) {
+  .rail-sound {
+    margin: 0 0 0 4px;
+    align-self: center;
+  }
+}
+
+@media (max-width: 920px) and (orientation: landscape) and (max-height: 520px) {
+  .rail-sound {
+    margin: auto 0 10px;
+  }
+}
+
 .rail-links {
   display: grid;
   gap: 4px;

@@ -3,7 +3,7 @@ import axios from 'axios'
 import { Chess } from 'chess.js'
 import { PieceIcon, pieceFromSymbol } from './pieces.jsx'
 import { BoardArrow } from './board.jsx'
-import { playSound } from './sounds.js'
+import { playSound, setSoundEnabled, soundEnabled } from './sounds.js'
 import PuzzleTrainer from './puzzle.jsx'
 import {
   AnalysisProgress, ClassIcon, CoachCard, EvalBar, EvalGraph, ExplorePanel, ReviewMoveList, ReviewNav, ReviewSummary,
@@ -119,6 +119,22 @@ function checkState(fen) {
   } catch (ignored) {
     return { checked: null, mated: false }
   }
+}
+
+function SoundIcon({ on }) {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path fill="currentColor" stroke="none" d="M4 9.5h3.2L12 5.5v13l-4.8-4H4z" />
+      {on ? (
+        <>
+          <path d="M15.5 9.2a4 4 0 0 1 0 5.6" />
+          <path d="M18.2 6.6a7.6 7.6 0 0 1 0 10.8" />
+        </>
+      ) : (
+        <path d="M16 9.5l5 5m0-5l-5 5" />
+      )}
+    </svg>
+  )
 }
 
 function CrownIcon() {
@@ -296,6 +312,7 @@ export default function App() {
   // Moves queued while Stockfish thinks (chess.com style): shown on the board at once, played one per turn
   // as soon as Stockfish has moved. If one is illegal by then, the whole queue is dropped.
   const [premoves, setPremoves] = useState([])
+  const [sound, setSound] = useState(soundEnabled)
   // Browsing the live game's earlier positions (← → Home End, or a click in the move list); null = the live position.
   const [historyPly, setHistoryPly] = useState(null)
   const premoveBusyRef = useRef(false)
@@ -1029,6 +1046,13 @@ export default function App() {
     setDragGhost(null)
   }
 
+  function toggleSound() {
+    const next = !sound
+    setSound(next)
+    setSoundEnabled(next)
+    if (next) playSound('move', true)
+  }
+
   // Home/brand: open the start/setup state. A game in progress is never discarded without confirmation.
   function goHome() {
     if (mode !== 'play') {
@@ -1246,6 +1270,16 @@ export default function App() {
             <span>Puzzles</span>
           </button>
         </div>
+        <button
+          type="button"
+          className={`rail-sound ${sound ? 'on' : 'off'}`}
+          onClick={toggleSound}
+          aria-pressed={sound}
+          aria-label={sound ? 'Sound on – click to mute' : 'Sound off – click to unmute'}
+          title={sound ? 'Mute sounds' : 'Turn sounds on'}
+        >
+          <SoundIcon on={sound} />
+        </button>
       </nav>
 
       {mode === 'puzzles' ? <PuzzleTrainer /> : (
