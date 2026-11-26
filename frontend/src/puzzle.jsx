@@ -53,7 +53,7 @@ function readStats() {
 }
 
 // Elo against the puzzle's rating; a bigger K while the rating is still settling.
-function ratedResult(stats, puzzleRating, win) {
+export function ratedResult(stats, puzzleRating, win) {
   const k = stats.played < 20 ? 40 : 20
   const expected = 1 / (1 + 10 ** ((puzzleRating - stats.rating) / 400))
   const delta = Math.round(k * ((win ? 1 : 0) - expected))
@@ -84,7 +84,7 @@ function colorName(color) {
   return color === 'white' ? 'White' : 'Black'
 }
 
-function rememberRecent(stats, id) {
+export function rememberRecent(stats, id) {
   return [...stats.recent.filter(item => item !== id), id].slice(-RECENT_LIMIT)
 }
 
