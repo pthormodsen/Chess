@@ -65,6 +65,25 @@ function withMoveApplied(pieces, move) {
 
 let slideCounter = 0
 
+/**
+ * The pieces that slide for one move, forwards or (reverse) taking it back: the mover, plus the rook when
+ * the king castles. piecesAfter is the position being shown once the slide ends.
+ */
+function moveSlides(move, piecesAfter, reverse) {
+  if (!move) return []
+  const slide = (fromCol, fromRow, toCol, toRow) => (reverse
+    ? { fromCol: toCol, fromRow: toRow, toCol: fromCol, toRow: fromRow }
+    : { fromCol, fromRow, toCol, toRow })
+  const slides = [slide(move.fromCol, move.fromRow, move.toCol, move.toRow)]
+  const landed = reverse ? { col: move.fromCol, row: move.fromRow } : { col: move.toCol, row: move.toRow }
+  const mover = (piecesAfter ?? []).find(piece => piece.col === landed.col && piece.row === landed.row)
+  if (mover?.name === 'King' && Math.abs(move.toCol - move.fromCol) === 2) {
+    const kingside = move.toCol > move.fromCol
+    slides.push(slide(kingside ? 7 : 0, move.fromRow, kingside ? 5 : 3, move.fromRow))
+  }
+  return slides
+}
+
 const FEN_LETTERS = { Pawn: 'p', Knight: 'n', Bishop: 'b', Rook: 'r', Queen: 'q', King: 'k' }
 
 /** A FEN good enough to ask "in check? mated?" (no castling or en-passant rights: neither can answer a check... except e.p., rarely). */
@@ -420,16 +439,22 @@ export default function App() {
     shownStepRef.current = shownStep && { ...shownStep, count: shownPieceCount }
     const dragged = draggedRef.current
     draggedRef.current = false
-    if (!previous || !shownStep?.move) return
+    if (!previous || !shownStep) return
     const fromReviewPosition = previous.scope === 'review' && shownStep.scope.endsWith(`@${previous.n}`) && shownStep.n === 1
-    const advanced = (previous.scope === shownStep.scope && shownStep.n === previous.n + 1) || fromReviewPosition
-    if (!advanced) {
-      if (previous.scope !== shownStep.scope || previous.n !== shownStep.n) setSlide(null)
-      return
+    const advanced = Boolean(shownStep.move) && ((previous.scope === shownStep.scope && shownStep.n === previous.n + 1) || fromReviewPosition)
+    // One step back (← in a game or review, or leaving a line for the review position): the last move slides back.
+    const backToReview = shownStep.scope === 'review' && previous.scope.endsWith(`@${shownStep.n}`) && previous.n === 1
+    const retreated = Boolean(previous.move) && ((previous.scope === shownStep.scope && shownStep.n === previous.n - 1) || backToReview)
+    if (advanced) {
+      setSlide(dragged ? null : { id: ++slideCounter, list: moveSlides(shownStep.move, boardPieces, false) })
+      const san = shownStep.san ?? ''
+      playSound(/[+#]/.test(san) ? 'check' : shownPieceCount < previous.count || san.includes('x') ? 'capture' : 'move')
+    } else if (retreated) {
+      setSlide({ id: ++slideCounter, list: moveSlides(previous.move, boardPieces, true) })
+      playSound('move')
+    } else if (previous.scope !== shownStep.scope || previous.n !== shownStep.n) {
+      setSlide(null)
     }
-    setSlide(dragged ? null : { ...shownStep.move, id: ++slideCounter })
-    const san = shownStep.san ?? ''
-    playSound(/[+#]/.test(san) ? 'check' : shownPieceCount < previous.count || san.includes('x') ? 'capture' : 'move')
   }, [shownStep?.scope, shownStep?.n])
 
   // The first queued premove is played the moment Stockfish has moved, if it is legal; otherwise the queue is dropped.
@@ -1280,13 +1305,13 @@ export default function App() {
                 const reviewTintHere = reviewMeta && reviewPlayedMove && (reviewBadgeHere || (reviewPlayedMove.fromCol === col && reviewPlayedMove.fromRow === row))
                 const movable = canMovePiece(piece)
                 const draggingHere = dragGhost && sameSquare(dragGhost.piece, square)
-                const slideHere = slide && slide.toCol === col && slide.toRow === row
+                const slideHere = slide?.list.find(item => item.toCol === col && item.toRow === row)
                 const endMark = endMarks[`${col},${row}`]
                 const checkHere = checked && piece?.name === 'King' && piece.color === checked
                 const premoveHere = premoveActive && premoves.some(item => (item.fromCol === col && item.fromRow === row) || (item.toCol === col && item.toRow === row))
                 const slideStyle = slideHere ? {
-                  '--slide-x': `${((flipped ? 7 - slide.fromCol : slide.fromCol) - displayCol) * 100}%`,
-                  '--slide-y': `${((flipped ? 7 - slide.fromRow : slide.fromRow) - displayRow) * 100}%`
+                  '--slide-x': `${((flipped ? 7 - slideHere.fromCol : slideHere.fromCol) - displayCol) * 100}%`,
+                  '--slide-y': `${((flipped ? 7 - slideHere.fromRow : slideHere.fromRow) - displayRow) * 100}%`
                 } : undefined
 
                 return (
