@@ -8,6 +8,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.Map;
 
@@ -32,6 +33,11 @@ public class ApiExceptionHandler {
     @ExceptionHandler(CapacityException.class)
     public ResponseEntity<Map<String, String>> busy(CapacityException e) {
         return error(HttpStatus.SERVICE_UNAVAILABLE, e.getMessage());
+    }
+
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<Map<String, String>> status(ResponseStatusException e) {
+        return error(HttpStatus.valueOf(e.getStatusCode().value()), e.getReason());
     }
 
     private static ResponseEntity<Map<String, String>> error(HttpStatus status, String message) {
