@@ -241,8 +241,9 @@ export default function App() {
     mutate(() => axios.post('/api/game/premoves', { startPly, moves: premoves }))
       .then(({ response, current }) => { if (current) applyGameState(response.data) })
       .catch(err => {
+        // Drop the queue locally only: re-sending it would retry forever while the server is unreachable.
         setError(formatApiError(err))
-        changePremoves([])
+        setPremoves(local => (local.length ? [] : local))
       })
   }, [premoves, pending])
 
