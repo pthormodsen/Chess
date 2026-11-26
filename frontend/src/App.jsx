@@ -848,6 +848,7 @@ export default function App() {
       active={game?.turn === side && game?.active && !game?.awaitingStart}
       clockRunning={game?.turn === side && game?.active && game?.clockStarted && !game?.analysisMode}
       untimed={Boolean(game?.untimed)}
+      showClock={game?.humanVsHuman ?? true}
       thinking={engineTurn && side === engineSide}
       captures={side === 'white' ? whiteCaptures : blackCaptures}
       advantage={side === 'white' ? balance : -balance}
@@ -875,10 +876,9 @@ export default function App() {
   const showSetup = settingsOpen ?? Boolean(game ? game.awaitingStart : plyCount === 0)
   // Settings configure the next game; once a game is running they are locked until New game.
   const setupLocked = Boolean(game && !game.awaitingStart)
-  const setupSummary = [
-    `${timeControl} min`,
-    humanVsHuman ? '2 players' : `vs Stockfish · ${playAs === 'white' ? 'White' : 'Black'} · ${engineElo}`
-  ].join(' · ')
+  const setupSummary = humanVsHuman
+    ? `${timeControl} min · 2 players`
+    : `vs Stockfish · ${playAs === 'white' ? 'White' : 'Black'} · ${engineElo}`
   const analysisNotice = !inReview && game?.analysisStatus === 'failed' ? (game.analysisReport ?? [])[0] : null
   const showProgress = !inReview && game?.analysisStatus === 'running'
   const reviewEval = explorePly
@@ -1173,17 +1173,19 @@ export default function App() {
                       </div>
                     )}
 
-                    <label className="field">
-                      <span className="field-label">Time</span>
-                      <select value={timeControl} onChange={event => updateSettings({ timeControl: Number(event.target.value) })} disabled={setupLocked}>
-                        <option value={1}>1 min</option>
-                        <option value={3}>3 min</option>
-                        <option value={5}>5 min</option>
-                        <option value={10}>10 min</option>
-                        <option value={15}>15 min</option>
-                        <option value={30}>30 min</option>
-                      </select>
-                    </label>
+                    {humanVsHuman && (
+                      <label className="field">
+                        <span className="field-label">Time</span>
+                        <select value={timeControl} onChange={event => updateSettings({ timeControl: Number(event.target.value) })} disabled={setupLocked}>
+                          <option value={1}>1 min</option>
+                          <option value={3}>3 min</option>
+                          <option value={5}>5 min</option>
+                          <option value={10}>10 min</option>
+                          <option value={15}>15 min</option>
+                          <option value={30}>30 min</option>
+                        </select>
+                      </label>
+                    )}
                   </div>
                 )}
               </section>
@@ -1310,7 +1312,7 @@ function ConfirmDialog({ title, children, actions, onCancel }) {
   )
 }
 
-function PlayerBar({ side, name, detail, clock, active, clockRunning, untimed, thinking, captures, advantage }) {
+function PlayerBar({ side, name, detail, clock, active, clockRunning, untimed, showClock, thinking, captures, advantage }) {
   return (
     <div className={`player-bar ${active ? 'active' : ''}`}>
       <div className="player-identity">
@@ -1336,12 +1338,14 @@ function PlayerBar({ side, name, detail, clock, active, clockRunning, untimed, t
           </div>
         </div>
       </div>
-      <div
-        className={`clock ${clockRunning ? 'running' : ''} ${untimed ? 'untimed' : ''}`}
-        title={untimed ? 'Imported game – no clock' : undefined}
-      >
-        {clock}
-      </div>
+      {showClock && (
+        <div
+          className={`clock ${clockRunning ? 'running' : ''} ${untimed ? 'untimed' : ''}`}
+          title={untimed ? 'Imported game – no clock' : undefined}
+        >
+          {clock}
+        </div>
+      )}
     </div>
   )
 }

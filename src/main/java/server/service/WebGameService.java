@@ -302,6 +302,8 @@ public class WebGameService {
 
     private static final String SETUP_STATUS_ENGINE = "Choose your settings, then press Start game.";
     private static final String SETUP_STATUS_LOCAL = "Press Start game or make the first move.";
+    // Games vs Stockfish have no clock; this only sets how long the engine takes per move (Board's 10-minute pace).
+    private static final int ENGINE_GAME_PACE_MINUTES = 10;
 
     private final class GameSession {
         private final Board board;
@@ -359,7 +361,7 @@ public class WebGameService {
         private void enterSetup() {
             awaitingStart = true;
             board.setEngineOnHold(true);
-            board.startNewGame();
+            resetBoard();
             status = humanVsHuman ? SETUP_STATUS_LOCAL : SETUP_STATUS_ENGINE;
         }
 
@@ -411,7 +413,7 @@ public class WebGameService {
             }
             applySettings(request);
             resetAnalysis("Press Analyze to run a Stockfish-powered review.");
-            board.startNewGame();
+            resetBoard();
             awaitingStart = false;
             board.setEngineOnHold(false); // Stockfish plays White's first move now, if it is White
             return state();
@@ -424,6 +426,15 @@ public class WebGameService {
                 enterSetup(); // reflect the new time control / side on the idle board
             }
             return state();
+        }
+
+        /** Fresh starting position: timed for two players, untimed against Stockfish. */
+        private void resetBoard() {
+            if(humanVsHuman){
+                board.startNewGame();
+            } else {
+                board.startUntimedGame();
+            }
         }
 
         private void applySettings(SettingsRequest request) {
@@ -446,7 +457,6 @@ public class WebGameService {
             }
             if(request.minutes() != null){
                 timeMinutes = clamp(request.minutes(), 1, 60);
-                board.setTimeControlMinutes(timeMinutes);
             }
             // Side first, so enabling the engine mid-game immediately plays for the correct colour.
             if(request.enginePlaysWhite() != null){
@@ -464,6 +474,7 @@ public class WebGameService {
                 engineElo = clamp(request.engineElo(), 800, 2800);
                 board.setEngineElo(engineElo);
             }
+            board.setTimeControlMinutes(humanVsHuman ? timeMinutes : ENGINE_GAME_PACE_MINUTES);
         }
 
         synchronized GameState state() {

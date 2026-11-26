@@ -169,7 +169,7 @@ class WebGameServiceTest {
         assertTrue(setup.awaitingStart());
         assertTrue(setup.uciMoves().isEmpty(), "engine moved during setup: " + setup.uciMoves());
         assertFalse(setup.engineTurn());
-        assertEquals("05:00", setup.whiteClock());
+        assertTrue(setup.untimed(), "games vs Stockfish have no clock");
         assertTrue(service.legalMoves(S1, 4, 1).isEmpty());
         assertThrows(ConflictException.class, () -> service.move(S1, new MoveRequest(4, 1, 4, 3)));
 
