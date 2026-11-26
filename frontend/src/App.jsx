@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import axios from 'axios'
 import { PieceIcon, pieceFromSymbol } from './pieces.jsx'
 import { BoardArrow } from './board.jsx'
+import { playSound } from './sounds.js'
 import PuzzleTrainer from './puzzle.jsx'
 import {
   AnalysisProgress, ClassIcon, CoachCard, EvalBar, EvalGraph, ExplorePanel, ReviewMoveList, ReviewNav, ReviewSummary,
@@ -59,6 +60,14 @@ function withMoveApplied(pieces, move) {
       }
       return piece
     })
+}
+
+let slideCounter = 0
+
+/** SAN of the last move in displayMoves entries like "12. Nf3 Nc6" or "1... e5". */
+function lastSan(displayMoves) {
+  const entry = displayMoves?.[displayMoves.length - 1]
+  return entry ? entry.trim().split(/\s+/).pop() : null
 }
 
 function sameMove(a, b) {
@@ -161,6 +170,10 @@ export default function App() {
   const [explore, setExplore] = useState(null)
   // The explored move waiting for Stockfish, shown on the board right away: { fromCol, fromRow, toCol, toRow }
   const [explorePending, setExplorePending] = useState(null)
+  // Your move, shown on the board while the server confirms it (reverted if it is rejected).
+  const [optimisticMove, setOptimisticMove] = useState(null)
+  // { fromCol, fromRow, toCol, toRow, id }: the piece on the target square slides in from its origin.
+  const [slide, setSlide] = useState(null)
   // Legal moves (UCI) per FEN while exploring; positions repeat a lot when stepping back and forth.
   const legalByFenRef = useRef(new Map())
   const reviewScrollRef = useRef(null)
@@ -168,6 +181,9 @@ export default function App() {
   const boardRef = useRef(null)
   const dragRef = useRef(null)
   const suppressClickRef = useRef(false)
+  // Set when a move is dropped by drag: the piece is already where it lands, so it doesn't slide.
+  const draggedRef = useRef(false)
+  const shownStepRef = useRef(null)
   const legalRequestRef = useRef(0)
   // latest: id of the newest mutation; epoch: bumped when any mutation starts or ends, so polls that overlap one are dropped.
   const mutationRef = useRef({ latest: 0, epoch: 0, inFlight: 0 })
@@ -205,7 +221,10 @@ export default function App() {
   const interactiveFen = reviewInteractive ? (explorePly ? explorePly.fen : reviewFrame?.positionFen ?? null) : null
   const interactiveTurn = interactiveFen ? (interactiveFen.split(' ')[1] === 'w' ? 'white' : 'black') : null
   const positionPieces = previewPly ? piecesFromFen(previewPly.fen) : explorePly ? piecesFromFen(explorePly.fen) : game?.pieces
-  const boardPieces = explorePending ? withMoveApplied(positionPieces, explorePending) : positionPieces
+  const liveOptimistic = optimisticMove && !game?.analysisMode ? optimisticMove : null
+  const boardPieces = explorePending ? withMoveApplied(positionPieces, explorePending)
+    : liveOptimistic ? withMoveApplied(positionPieces, liveOptimistic)
+    : positionPieces
 
   const piecesBySquare = useMemo(() => {
     const map = new Map()
@@ -221,6 +240,7 @@ export default function App() {
   const lastMove = previewPly ? uciSquares(previewPly.uci)
     : explorePending ? explorePending
     : explorePly ? uciSquares(explorePly.uci)
+    : liveOptimistic ? liveOptimistic
     : game?.lastMove
   const disconnected = connectionError && !game
   const engineTurn = Boolean(game?.engineTurn)
@@ -247,6 +267,33 @@ export default function App() {
   const nextPreviewPly = previewPlies[(linePreview?.index ?? -1) + 1] ?? null
   const reviewMovesStage = Boolean(game?.analysisMode) && reviewStage === 'moves'
   const plyCount = game?.uciMoves?.length ?? 0
+
+  // Which move the board is showing, as (scope, step): a move slides in and plays a sound only when the
+  // step advances by exactly one within the same line (live game, review, best line, your own line).
+  const exploreBase = exploring ? explore.index + 1 : 0
+  const shownStep = !game ? null
+    : !game.analysisMode ? { scope: 'live', n: plyCount + (liveOptimistic ? 1 : 0), move: lastMove, san: lastSan(game.displayMoves) }
+    : previewPly ? { scope: `line@${reviewPly}`, n: linePreview.index + 1, move: lastMove, san: previewPly.san }
+    : explorePending || explorePly ? { scope: `explore@${reviewPly}`, n: exploreBase + (explorePending ? 1 : 0), move: lastMove, san: explorePending ? null : explorePly.san }
+    : { scope: 'review', n: reviewPly, move: reviewPly >= 0 ? uciSquares(reviewFrame?.playedMove) : null, san: reviewFrame?.san }
+  const shownPieceCount = boardPieces?.length ?? 0
+
+  useEffect(() => {
+    const previous = shownStepRef.current
+    shownStepRef.current = shownStep && { ...shownStep, count: shownPieceCount }
+    const dragged = draggedRef.current
+    draggedRef.current = false
+    if (!previous || !shownStep?.move) return
+    const fromReviewPosition = previous.scope === 'review' && shownStep.scope.endsWith(`@${previous.n}`) && shownStep.n === 1
+    const advanced = (previous.scope === shownStep.scope && shownStep.n === previous.n + 1) || fromReviewPosition
+    if (!advanced) {
+      if (previous.scope !== shownStep.scope || previous.n !== shownStep.n) setSlide(null)
+      return
+    }
+    setSlide(dragged ? null : { ...shownStep.move, id: ++slideCounter })
+    const san = shownStep.san ?? ''
+    playSound(/[+#]/.test(san) ? 'check' : shownPieceCount < previous.count || san.includes('x') ? 'capture' : 'move')
+  }, [shownStep?.scope, shownStep?.n])
 
   // Turn the board only after a move has fully landed: never mid-drag, never with the promotion picker open,
   // and never while stepping through a review (orientation stays as it was when review began).
@@ -599,6 +646,7 @@ export default function App() {
     const scrollPosition = { left: window.scrollX, top: window.scrollY }
     setPending(true)
     setPromotion(null)
+    setOptimisticMove({ fromCol: origin.col, fromRow: origin.row, toCol: target.col, toRow: target.row, promotion: promotionPiece })
     let failed = false
     try {
       const payload = { fromCol: origin.col, fromRow: origin.row, toCol: target.col, toRow: target.row }
@@ -612,6 +660,7 @@ export default function App() {
       failed = true
     } finally {
       clearSelection()
+      setOptimisticMove(null)
       setPending(false)
     }
     if (failed) await refreshGame()
@@ -619,6 +668,7 @@ export default function App() {
 
   function handleSquareClick(col, row) {
     if (suppressClickRef.current) return
+    draggedRef.current = false
     if (reviewInteractive) {
       if (pending || promotion || explorePending) return
     } else {
@@ -697,7 +747,10 @@ export default function App() {
     suppressClickRef.current = true
     window.setTimeout(() => { suppressClickRef.current = false }, 0)
     const target = squareFromPoint(event.clientX, event.clientY)
-    if (target) attemptMove(drag.origin, target)
+    if (target) {
+      draggedRef.current = true
+      attemptMove(drag.origin, target)
+    }
   }
 
   function handlePiecePointerCancel() {
@@ -848,7 +901,7 @@ export default function App() {
       active={game?.turn === side && game?.active && !game?.awaitingStart}
       clockRunning={game?.turn === side && game?.active && game?.clockStarted && !game?.analysisMode}
       untimed={Boolean(game?.untimed)}
-      showClock={humanVsHuman}
+      showClock={humanVsHuman && !game?.untimed}
       thinking={engineTurn && side === engineSide}
       captures={side === 'white' ? whiteCaptures : blackCaptures}
       advantage={side === 'white' ? balance : -balance}
@@ -951,6 +1004,11 @@ export default function App() {
                 const reviewTintHere = reviewMeta && reviewPlayedMove && (reviewBadgeHere || (reviewPlayedMove.fromCol === col && reviewPlayedMove.fromRow === row))
                 const movable = canMovePiece(piece)
                 const draggingHere = dragGhost && sameSquare(dragGhost.piece, square)
+                const slideHere = slide && slide.toCol === col && slide.toRow === row
+                const slideStyle = slideHere ? {
+                  '--slide-x': `${((flipped ? 7 - slide.fromCol : slide.fromCol) - displayCol) * 100}%`,
+                  '--slide-y': `${((flipped ? 7 - slide.fromRow : slide.fromRow) - displayRow) * 100}%`
+                } : undefined
 
                 return (
                   <button
@@ -964,7 +1022,8 @@ export default function App() {
                       reviewTintHere ? 'review-square' : '',
                       previewPly && lastHere ? 'line-square' : '',
                       move?.capture ? 'can-capture' : '',
-                      move && !move.capture ? 'can-move' : ''
+                      move && !move.capture ? 'can-move' : '',
+                      slideHere ? 'slide-target' : ''
                     ].filter(Boolean).join(' ')}
                     style={reviewTintHere ? { '--class-color': reviewMeta.color } : undefined}
                     onClick={() => handleSquareClick(col, row)}
@@ -979,7 +1038,9 @@ export default function App() {
                     )}
                     {piece && (
                       <span
-                        className={['piece', piece.color, movable ? 'movable' : '', draggingHere ? 'dragging' : ''].filter(Boolean).join(' ')}
+                        key={slideHere ? `slide-${slide.id}` : 'piece'}
+                        style={slideStyle}
+                        className={['piece', piece.color, movable ? 'movable' : '', draggingHere ? 'dragging' : '', slideHere ? 'sliding' : ''].filter(Boolean).join(' ')}
                         onPointerDown={event => handlePiecePointerDown(event, piece)}
                         onPointerMove={handlePiecePointerMove}
                         onPointerUp={handlePiecePointerUp}
@@ -1038,9 +1099,9 @@ export default function App() {
           </header>
 
           {disconnected && (
-            <div className="notice warning">
-              <strong>No game state loaded.</strong>
-              <span>Run `mvn spring-boot:run -Dspring-boot.run.main-class=server.ServerApplication` from the project root.</span>
+            <div className="notice warning" role="status">
+              <span className="spinner" aria-hidden="true" />
+              <span>Can’t reach the game server. Retrying…</span>
             </div>
           )}
           {error && <div className="notice error" role="alert">{error}</div>}
