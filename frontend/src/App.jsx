@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import axios from 'axios'
 import { PieceIcon, pieceFromSymbol } from './pieces.jsx'
+import { BoardArrow } from './board.jsx'
+import PuzzleTrainer from './puzzle.jsx'
 import {
   AnalysisProgress, ClassIcon, CoachCard, EvalBar, EvalGraph, ExplorePanel, ReviewMoveList, ReviewNav, ReviewSummary,
   classMeta, evalAtPly, exploreEvaluation, findKeyMoment, piecesFromFen, uciSquares
@@ -121,7 +123,15 @@ const POLL_INTERVAL_MS = 1000
 const boardIndexes = [0, 1, 2, 3, 4, 5, 6, 7]
 const noLegalMoves = { origin: null, moves: [] }
 
+// Top-level view, kept in the URL hash so a reload (or a shared link) opens the same one.
+function modeFromHash() {
+  return window.location.hash === '#puzzles' ? 'puzzles' : 'play'
+}
+
 export default function App() {
+  const [mode, setMode] = useState(modeFromHash)
+  const modeRef = useRef(mode)
+  modeRef.current = mode
   const [game, setGame] = useState(null)
   const [selected, setSelected] = useState(null)
   // Legal targets are stored with the square they were fetched for, so stale responses can't be used for another piece.
@@ -171,7 +181,8 @@ export default function App() {
     let timer = null
 
     async function poll() {
-      if (!document.hidden) await refreshGame()
+      // The game isn't on screen in puzzle mode; switching back refreshes it at once.
+      if (!document.hidden && modeRef.current === 'play') await refreshGame()
       if (!stopped) timer = window.setTimeout(poll, POLL_INTERVAL_MS)
     }
 
@@ -259,6 +270,25 @@ export default function App() {
     setPromotion(null)
   }, [plyCount, game?.analysisMode, game?.active, interactiveFen])
 
+  useEffect(() => {
+    function handleHash() {
+      setMode(modeFromHash())
+    }
+    window.addEventListener('hashchange', handleHash)
+    return () => window.removeEventListener('hashchange', handleHash)
+  }, [])
+
+  useEffect(() => {
+    if (mode === 'play') refreshGame()
+  }, [mode])
+
+  function switchMode(next) {
+    if (next === mode) return
+    const url = next === 'puzzles' ? '#puzzles' : window.location.pathname + window.location.search
+    window.history.pushState(null, '', url)
+    setMode(next)
+  }
+
   // Entering review always opens the summary; leaving it clears any line preview.
   useEffect(() => {
     const inReviewNow = Boolean(game?.analysisMode)
@@ -287,7 +317,7 @@ export default function App() {
       const target = event.target
       const tagName = target?.tagName?.toLowerCase()
       const isTyping = tagName === 'input' || tagName === 'select' || tagName === 'textarea' || target?.isContentEditable
-      if (!game?.analysisMode || pending || isTyping || confirmHome || event.altKey || event.metaKey || event.ctrlKey) return
+      if (modeRef.current !== 'play' || !game?.analysisMode || pending || isTyping || confirmHome || event.altKey || event.metaKey || event.ctrlKey) return
       if (event.key === 'f' || event.key === 'F') {
         event.preventDefault()
         toggleFlip()
@@ -677,6 +707,10 @@ export default function App() {
 
   // Home/brand: open the start/setup state. A game in progress is never discarded without confirmation.
   function goHome() {
+    if (mode !== 'play') {
+      switchMode('play')
+      return
+    }
     if (plyCount > 0 || game?.analysisMode || (game && !game.awaitingStart && game.active)) {
       setConfirmHome(true)
       return
@@ -865,8 +899,19 @@ export default function App() {
           </span>
           <span className="brand-name">Chess</span>
         </button>
+        <div className="rail-links">
+          <button type="button" className={`rail-link ${mode === 'play' ? 'active' : ''}`} aria-current={mode === 'play' ? 'page' : undefined} onClick={() => switchMode('play')}>
+            <PieceIcon name="Pawn" color="white" decorative />
+            <span>Play</span>
+          </button>
+          <button type="button" className={`rail-link ${mode === 'puzzles' ? 'active' : ''}`} aria-current={mode === 'puzzles' ? 'page' : undefined} onClick={() => switchMode('puzzles')}>
+            <PieceIcon name="Knight" color="white" decorative />
+            <span>Puzzles</span>
+          </button>
+        </div>
       </nav>
 
+      {mode === 'puzzles' ? <PuzzleTrainer /> : (
       <section className={`game-layout ${inReview ? 'is-review' : 'is-live'}`}>
         <div className="play-area">
           {sideBar(topSide)}
@@ -1205,6 +1250,7 @@ export default function App() {
           )}
         </aside>
       </section>
+      )}
 
       {confirmHome && (
         <ConfirmDialog
@@ -1261,40 +1307,6 @@ function ConfirmDialog({ title, children, actions, onCancel }) {
         </div>
       </div>
     </div>
-  )
-}
-
-function BoardArrow({ move, flipped, tone, label }) {
-  const square = 12.5
-  const toDisplay = index => (flipped ? 7 - index : index)
-  const fromX = toDisplay(move.fromCol) * square + square / 2
-  const fromY = toDisplay(move.fromRow) * square + square / 2
-  const toX = toDisplay(move.toCol) * square + square / 2
-  const toY = toDisplay(move.toRow) * square + square / 2
-  const dx = toX - fromX
-  const dy = toY - fromY
-  const length = Math.hypot(dx, dy)
-  if (length === 0) return null
-
-  const ux = dx / length
-  const uy = dy / length
-  const startInset = Math.min(1.8, length * 0.16)
-  const headLength = 3.3
-  const headWidth = 3.7
-  const startX = fromX + ux * startInset
-  const startY = fromY + uy * startInset
-  const shaftEndX = toX - ux * headLength
-  const shaftEndY = toY - uy * headLength
-  const leftX = shaftEndX - uy * headWidth / 2
-  const leftY = shaftEndY + ux * headWidth / 2
-  const rightX = shaftEndX + uy * headWidth / 2
-  const rightY = shaftEndY - ux * headWidth / 2
-
-  return (
-    <svg className={`board-arrow ${tone}`} viewBox="0 0 100 100" role="img" aria-label={label}>
-      <line className="arrow-shaft" x1={startX} y1={startY} x2={shaftEndX} y2={shaftEndY} />
-      <polygon className="arrow-head" points={`${toX},${toY} ${leftX},${leftY} ${rightX},${rightY}`} />
-    </svg>
   )
 }
 
