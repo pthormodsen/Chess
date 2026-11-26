@@ -2,16 +2,9 @@ package pieces;
 
 import main.Board;
 
-import javax.imageio.ImageIO;
-import java.awt.*;
-import java.awt.image.BufferedImage;
-import java.io.IOException;
-import java.io.InputStream;
-
 public class Piece {
 
     public int col, row;
-    public int xPos, yPos;
 
     public boolean isWhite;
     public String name;
@@ -19,41 +12,6 @@ public class Piece {
 
     public boolean isFirstMove = true;
 
-    // Headless (server) boards never paint, so every piece shares one blank sheet instead of allocating its own.
-    private static final int HEADLESS_SHEET_SCALE = 100;
-    private static BufferedImage headlessSheet;
-
-    private static synchronized BufferedImage headlessSheet(){
-        if(headlessSheet == null){
-            headlessSheet = new BufferedImage(HEADLESS_SHEET_SCALE * 6, HEADLESS_SHEET_SCALE * 2, BufferedImage.TYPE_INT_ARGB);
-        }
-        return headlessSheet;
-    }
-
-    BufferedImage sheet;
-    protected int sheetScale;
-    {
-        if(GraphicsEnvironment.isHeadless()){
-            sheetScale = HEADLESS_SHEET_SCALE;
-            sheet = headlessSheet();
-        } else {
-            try (InputStream spriteStream = Piece.class.getClassLoader().getResourceAsStream("pieces.png")) {
-                if(spriteStream == null){
-                    throw new IllegalStateException("Unable to locate sprite sheet 'pieces.png' on the classpath.");
-                }
-                sheet = ImageIO.read(spriteStream);
-                if(sheet == null){
-                    throw new IllegalStateException("Failed to decode sprite sheet 'pieces.png'.");
-                }
-                sheetScale = sheet.getWidth()/6;
-            } catch (IOException e) {
-                throw new IllegalStateException("Failed to load sprite sheet 'pieces.png'.", e);
-            }
-        }
-    }
-
-
-    Image sprite;
     Board board;
 
     public Piece(Board board) {
@@ -66,10 +24,6 @@ public class Piece {
 
     public boolean moveCollidesWithPiece(int col, int row){
         return false;
-    }
-
-    public void paint(Graphics g2d){
-        g2d.drawImage(sprite, xPos, yPos, null);
     }
 
 }

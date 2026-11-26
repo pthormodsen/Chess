@@ -77,7 +77,7 @@ public final class EngineTempo {
         return Duration.ofMillis(Math.max(MIN_MILLIS, Math.min(MAX_MILLIS, millis)));
     }
 
-    /** Think time in timed games (the desktop app): the Elo's base time scaled by the time control, with some noise. */
+    /** Think time in timed games (two-player games never ask Stockfish, so this only matters if one gets an engine): the Elo's base time scaled by the time control, with some noise. */
     static Duration timedThinkTime(int elo, int timeControlMinutes, int ply, int pieceCount, Random random) {
         long scaledBaseMillis = Math.round(timedBaseMillis(elo) * timeControlFactor(timeControlMinutes));
         long jitter = -220 + (long) (random.nextDouble() * 601);

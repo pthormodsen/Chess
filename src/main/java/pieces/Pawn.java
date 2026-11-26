@@ -1,7 +1,6 @@
 package pieces;
 
 import main.Board;
-import java.awt.image.BufferedImage;
 
 public class Pawn extends Piece {
 
@@ -9,15 +8,9 @@ public class Pawn extends Piece {
         super(board);
         this.col = col;
         this.row = row;
-        this.xPos = col * board.tileSize;
-        this.yPos = row * board.tileSize;
         this.isWhite = isWhite;
         this.name = "Pawn";
         this.value = 1;
-
-        this.sprite = sheet.getSubimage(5 * sheetScale, isWhite ? 0 : sheetScale,
-                sheetScale, sheetScale)
-            .getScaledInstance(board.tileSize, board.tileSize, BufferedImage.SCALE_SMOOTH);
     }
 
     public boolean isValidMovement(int col, int row){
@@ -61,6 +54,5 @@ public class Pawn extends Piece {
     private boolean isEnemyPawn(Piece piece){
         return piece != null && "Pawn".equals(piece.name) && piece.isWhite != isWhite;
     }
-
 
 }

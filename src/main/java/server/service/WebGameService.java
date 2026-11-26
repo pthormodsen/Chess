@@ -92,7 +92,6 @@ public class WebGameService {
                 summaries.put(key, summary);
             }
         };
-        System.setProperty("java.awt.headless", "true");
         if(stockfishPath != null && !stockfishPath.isBlank() && System.getProperty("stockfish.path") == null){
             System.setProperty("stockfish.path", stockfishPath);
         }
@@ -341,7 +340,7 @@ public class WebGameService {
         private int premoveStartPly;
 
         GameSession() {
-            // Engine moves and analysis results are applied under this session's lock, never on the Swing EDT.
+            // Engine moves and analysis results are applied under this session's lock, never concurrently with a request.
             board = new Board(task -> {
                 synchronized (this) {
                     if(!disposed){

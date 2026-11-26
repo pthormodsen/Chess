@@ -1,9 +1,6 @@
 # Chess
 
-Chess is a Java chess project with two interfaces:
-
-- A Swing desktop app.
-- A Spring Boot + React web app for browser play, Stockfish review, and self-hosting.
+Chess is a Spring Boot + React web app for browser play, Stockfish review, puzzles and self-hosting.
 
 The web version is designed to run on a home Ubuntu server behind Cloudflare Tunnel.
 
@@ -74,21 +71,6 @@ To use another Stockfish binary:
 ```bash
 export STOCKFISH_PATH=/absolute/path/to/stockfish
 ./run-web.sh
-```
-
-## Desktop App
-
-Build and run the Swing version:
-
-```bash
-mvn clean package
-java -cp target/classes main.Main
-```
-
-Or use:
-
-```bash
-./run.sh
 ```
 
 ## Deployment

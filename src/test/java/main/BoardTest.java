@@ -14,10 +14,6 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class BoardTest {
 
-    static {
-        System.setProperty("java.awt.headless", "true");
-    }
-
     @Test
     void untimedGameNeverStartsOrChargesTheClock() throws Exception {
         Board board = new Board(Runnable::run);

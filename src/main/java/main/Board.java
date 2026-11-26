@@ -4,9 +4,6 @@ import analysis.GameAnalyzer;
 import analysis.GameReviewFormatter;
 import pieces.*;
 
-import javax.swing.*;
-import java.awt.*;
-import java.awt.GraphicsEnvironment;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -21,26 +18,24 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Collectors;
 import java.util.function.Consumer;
-import javazoom.jl.player.Player;
 
 import uci.StockfishClient;
 
-public class Board extends JPanel {
+/**
+ * The game: board state, move validation and special moves, FEN, clocks, SAN/PGN, Stockfish play and the
+ * game-review state. UI-free; results are pushed out through consumer callbacks.
+ */
+public class Board {
 
     public String fenStartingPosition = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
-    public int tileSize = 75;
-    final int coordinateMargin = 24;
     int cols = 8;
     int rows = 8;
 
     ArrayList<Piece> pieceList = new ArrayList<>();
 
-    public Piece selectedPiece;
 
-    Input input = new Input(this);
 
-    private final BoardPainter painter = new BoardPainter(this);
 
     public CheckScanner checkScanner = new CheckScanner(this);
 
@@ -71,10 +66,8 @@ public class Board extends JPanel {
     private GameAnalyzer.ResultCache analysisCache;
     // While held (server setup phase), configuration changes never trigger an engine move.
     private boolean engineOnHold = false;
-    // Server mode: no eager Stockfish, no Swing clock timer, async results applied via callbackExecutor instead of the EDT.
-    private final boolean serverMode;
+    // Engine moves and analysis results are applied through this (the web session serializes them under its lock).
     private final Executor callbackExecutor;
-    private boolean flipBoard = false;
     private int engineSkillLevel = 8;
     private int engineElo = 1200;
     private int timeControlMinutes = 10;
@@ -82,7 +75,6 @@ public class Board extends JPanel {
     private long whiteClockMillis = initialClockMillis;
     private long blackClockMillis = initialClockMillis;
     private long lastClockUpdateMillis = 0L;
-    private javax.swing.Timer clockTimer;
     private boolean clockStarted = false;
     // Untimed games (e.g. imported PGNs): the clock never starts, so no time is charged and nobody flags.
     private boolean untimed = false;
@@ -90,10 +82,6 @@ public class Board extends JPanel {
     // Why the game ended, decided by board rules / clocks (never by engine evaluation). Null while the game is running.
     private GameEndReason gameEndReason;
     private String gameEndMessage;
-    boolean isDraggingPiece = false;
-    int dragScreenX;
-    int dragScreenY;
-    private final BoardSounds sounds = new BoardSounds();
     private Consumer<String> statusConsumer;
     private Consumer<String> gameEndConsumer;
     private Consumer<String> evaluationConsumer;
@@ -112,37 +100,23 @@ public class Board extends JPanel {
     private java.util.List<GameAnalyzer.Entry> reviewEntries = java.util.List.of();
     private GameAnalyzer.Summary lastAnalysisSummary;
     private java.util.function.Consumer<AnalysisFrame> analysisFrameConsumer;
-    MoveHighlight bestMoveArrow;
-    String currentQualityTag;
     private LiveGameState liveStateBackup;
-    final ArrayList<MoveHighlight> checkMarkers = new ArrayList<>();
 
 
+    /** A board whose engine and analysis results are applied on the thread that produces them. */
     public Board() {
-        this(null);
+        this(Runnable::run);
     }
 
     /**
-     * Creates a board for headless server use when {@code callbackExecutor} is non-null. Engine moves and
-     * analysis results are then handed to that executor (which must serialize them with the caller's own
-     * locking) instead of the Swing EDT, Stockfish is only started when engine play is enabled, and the
-     * clock is settled on read instead of by a Swing timer.
+     * Engine moves and analysis results are handed to {@code callbackExecutor}, which must serialize them with
+     * the caller's own locking. Stockfish is only started when engine play is enabled, and the clock is
+     * settled whenever it is read.
      */
     public Board(Executor callbackExecutor) {
-        this.serverMode = callbackExecutor != null;
-        this.callbackExecutor = serverMode ? callbackExecutor : SwingUtilities::invokeLater;
-        this.setPreferredSize(new Dimension(cols * tileSize + coordinateMargin * 2, rows * tileSize + coordinateMargin * 2));
-        this.setBackground(new Color(43, 43, 43));
-        this.setOpaque(true);
-        this.addMouseListener(input);
-        this.addMouseMotionListener(input);
+        this.callbackExecutor = java.util.Objects.requireNonNull(callbackExecutor);
         loadPositionFromFEN(fenStartingPosition);
-        if(serverMode){
-            resolveEnginePath();
-        } else {
-            initializeEngineIntegration();
-        }
-        updateCheckMarkers();
+        resolveEnginePath();
     }
 
     private LiveGameState captureLiveGameState(){
@@ -166,7 +140,6 @@ public class Board extends JPanel {
             isGameOver,
             engineEnabled,
             engineIsWhite,
-            flipBoard,
             enPassantTile,
             whiteClockMillis,
             blackClockMillis,
@@ -186,10 +159,7 @@ public class Board extends JPanel {
             reviewSanMoves = java.util.List.of();
             analysisPointer = -1;
             lastAnalysisSummary = null;
-            bestMoveArrow = null;
-            currentQualityTag = null;
             notifyAnalysisFrame();
-            repaint();
             return;
         }
 
@@ -200,8 +170,6 @@ public class Board extends JPanel {
         analysisSnapshots.clear();
         analysisPointer = -1;
         lastAnalysisSummary = null;
-        bestMoveArrow = null;
-        currentQualityTag = null;
 
         pieceList.clear();
         for(PieceState state : liveStateBackup.pieces){
@@ -226,7 +194,6 @@ public class Board extends JPanel {
         isGameOver = liveStateBackup.isGameOver;
         engineEnabled = liveStateBackup.engineEnabled;
         engineIsWhite = liveStateBackup.engineIsWhite;
-        flipBoard = liveStateBackup.flipBoard;
         enPassantTile = liveStateBackup.enPassantTile;
         whiteClockMillis = liveStateBackup.whiteClockMillis;
         blackClockMillis = liveStateBackup.blackClockMillis;
@@ -240,14 +207,12 @@ public class Board extends JPanel {
         notifyEvaluation();
         notifyMoveLog();
         notifyClock();
-        updateCheckMarkers();
         if(engineEnabled){
             requestEngineMoveIfNeeded();
         }
 
         liveStateBackup = null;
         notifyAnalysisFrame();
-        repaint();
     }
 
     private Move rebuildStoredMove(StoredMove stored){
@@ -316,7 +281,6 @@ public class Board extends JPanel {
             cancelPendingEngineMove();
         }
         this.engineIsWhite = playsWhite;
-        this.flipBoard = playsWhite;
         if(isGameActive && isWhiteToMove == engineIsWhite){
             requestEngineMoveIfNeeded();
         }
@@ -369,7 +333,6 @@ public class Board extends JPanel {
             requestEngineMoveIfNeeded();
         }
         notifyEvaluation();
-        repaint();
     }
 
     /**
@@ -434,8 +397,6 @@ public class Board extends JPanel {
 
         move.piece.col = move.newCol;
         move.piece.row = move.newRow;
-        move.piece.xPos = boardToPixelX(move.piece.col);
-        move.piece.yPos = boardToPixelY(move.piece.row);
 
         move.piece.isFirstMove = false;
 
@@ -464,19 +425,8 @@ public class Board extends JPanel {
             }
             requestEngineMoveIfNeeded();
             notifyEvaluation();
-            repaint();
 
-            byte[] soundToPlay = sounds.move;
-            if(move.isCastle){
-                soundToPlay = sounds.castle;
-            } else if(move.isPromotion){
-                soundToPlay = sounds.promote;
-            } else if(move.capture != null){
-                soundToPlay = sounds.capture;
-            }
-            sounds.play(soundToPlay);
         }
-        updateCheckMarkers();
     }
 
     private void moveKing(Move move){
@@ -489,8 +439,6 @@ public class Board extends JPanel {
             if(rook != null && "Rook".equals(rook.name)){
                 rook.col = rookTargetCol;
                 rook.row = move.piece.row;
-                rook.xPos = boardToPixelX(rook.col);
-                rook.yPos = boardToPixelY(rook.row);
                 rook.isFirstMove = false;
                 move.isCastle = true;
             }
@@ -558,7 +506,6 @@ public class Board extends JPanel {
         removePiece(piece);
         if(notify){
             notifyCaptures();
-            sounds.play(sounds.capture);
         }
     }
 
@@ -702,7 +649,6 @@ public class Board extends JPanel {
         }
         notifyCaptures();
         notifyEvaluation();
-        updateCheckMarkers();
     }
 
     private void updateGameState(){
@@ -727,7 +673,6 @@ public class Board extends JPanel {
         } else if (insufficientMaterial(true) && insufficientMaterial(false)) {
             finishGame(GameEndReason.INSUFFICIENT_MATERIAL, null);
         } else if (kingChecked){
-            sounds.play(sounds.check);
             if(statusConsumer != null){
                 statusConsumer.accept((isWhiteToMove ? "White" : "Black") + " is in check!");
             }
@@ -764,10 +709,6 @@ public class Board extends JPanel {
         gameEndReason = reason;
         gameEndMessage = message;
         lastClockUpdateMillis = 0L;
-        if(clockTimer != null){
-            clockTimer.stop();
-        }
-        sounds.play(sounds.notify);
         lastResultTag = whiteWon == null ? "1/2-1/2" : (whiteWon ? "1-0" : "0-1");
         if(statusConsumer != null){
             statusConsumer.accept(message);
@@ -927,79 +868,8 @@ public class Board extends JPanel {
         return false;
     }
 
-    @Override
-    public void paintComponent(Graphics g) {
-        super.paintComponent(g);
-        painter.paint((Graphics2D) g);
-    }
-
     public Move getLastMove(){
         return lastMove;
-    }
-
-    private void updateCheckMarkers(){
-        checkMarkers.clear();
-        Piece king = findKing(isWhiteToMove);
-        if(king == null){
-            return;
-        }
-        for(Piece piece : pieceList){
-            if(piece.isWhite == king.isWhite){
-                continue;
-            }
-            if(attacksSquare(piece, king.col, king.row)){
-                checkMarkers.add(new MoveHighlight(piece.col, piece.row, king.col, king.row));
-            }
-        }
-        repaint();
-    }
-
-    private boolean attacksSquare(Piece attacker, int targetCol, int targetRow){
-        int colDiff = targetCol - attacker.col;
-        int rowDiff = targetRow - attacker.row;
-        switch (attacker.name){
-            case "Rook":
-                if(attacker.col == targetCol || attacker.row == targetRow){
-                    return isPathClear(attacker.col, attacker.row, targetCol, targetRow);
-                }
-                return false;
-            case "Bishop":
-                if(Math.abs(colDiff) == Math.abs(rowDiff)){
-                    return isPathClear(attacker.col, attacker.row, targetCol, targetRow);
-                }
-                return false;
-            case "Queen":
-                if(attacker.col == targetCol || attacker.row == targetRow ||
-                    Math.abs(colDiff) == Math.abs(rowDiff)){
-                    return isPathClear(attacker.col, attacker.row, targetCol, targetRow);
-                }
-                return false;
-            case "Knight":
-                return (Math.abs(colDiff) == 1 && Math.abs(rowDiff) == 2) ||
-                    (Math.abs(colDiff) == 2 && Math.abs(rowDiff) == 1);
-            case "Pawn":
-                int dir = attacker.isWhite ? -1 : 1;
-                return rowDiff == dir && Math.abs(colDiff) == 1;
-            case "King":
-                return Math.max(Math.abs(colDiff), Math.abs(rowDiff)) == 1;
-            default:
-                return false;
-        }
-    }
-
-    private boolean isPathClear(int fromCol, int fromRow, int toCol, int toRow){
-        int stepCol = Integer.compare(toCol, fromCol);
-        int stepRow = Integer.compare(toRow, fromRow);
-        int c = fromCol + stepCol;
-        int r = fromRow + stepRow;
-        while(c != toCol || r != toRow){
-            if(getPiece(c, r) != null){
-                return false;
-            }
-            c += stepCol;
-            r += stepRow;
-        }
-        return true;
     }
 
     private Path resolveEnginePath(){
@@ -1196,8 +1066,6 @@ public class Board extends JPanel {
         isGameOver = false;
         engineEnabled = false;
         cancelPendingEngineMove();
-        bestMoveArrow = null;
-        currentQualityTag = null;
         reviewUciMoves = new ArrayList<>(movesUci);
         reviewSanMoves = new ArrayList<>(sanMoves);
         reviewEntries = summary.entries;
@@ -1264,11 +1132,8 @@ public class Board extends JPanel {
         } else {
             lastMove = null;
         }
-        selectedPiece = null;
-        stopDragging();
         notifyCaptures();
         notifyEvaluation();
-        updateCheckMarkers();
     }
 
     private void rebuildDisplayMovesForPointer(){
@@ -1301,12 +1166,6 @@ public class Board extends JPanel {
             ? reviewSanMoves.get(analysisPointer)
             : null;
 
-        currentQualityTag = entry != null ? entry.qualityTag : null;
-        if(entry != null && entry.bestMove != null && shouldShowBestArrow(entry)){
-            bestMoveArrow = highlightFromUci(entry.bestMove);
-        } else {
-            bestMoveArrow = null;
-        }
 
         boolean finalPly = analysisPointer >= 0 && analysisPointer == reviewSanMoves.size() - 1;
         analysisFrameConsumer.accept(new AnalysisFrame(
@@ -1319,7 +1178,6 @@ public class Board extends JPanel {
             finalPly ? gameEndReason : null,
             finalPly ? gameEndMessage : null
         ));
-        repaint();
     }
 
     private Piece createPieceByName(String name, int col, int row, boolean isWhite){
@@ -1341,30 +1199,6 @@ public class Board extends JPanel {
         }
     }
 
-    private MoveHighlight highlightFromUci(String uci){
-        if(uci == null || uci.length() < 4){
-            return null;
-        }
-        int fromCol = uci.charAt(0) - 'a';
-        int fromRow = rows - Character.getNumericValue(uci.charAt(1));
-        int toCol = uci.charAt(2) - 'a';
-        int toRow = rows - Character.getNumericValue(uci.charAt(3));
-        if(!isInsideBoard(fromCol, fromRow) || !isInsideBoard(toCol, toRow)){
-            return null;
-        }
-        return new MoveHighlight(fromCol, fromRow, toCol, toRow);
-    }
-
-    private boolean shouldShowBestArrow(GameAnalyzer.Entry entry){
-        if(entry == null){
-            return false;
-        }
-        if(entry.bestMove == null || entry.playedMove == null){
-            return false;
-        }
-        return !entry.bestMove.equals(entry.playedMove);
-    }
-
     private void clearAnalysisReview(){
         analysisRequestId++;
         analysisMode = false;
@@ -1374,8 +1208,6 @@ public class Board extends JPanel {
         reviewSanMoves = java.util.List.of();
         reviewUciMoves = java.util.List.of();
         lastAnalysisSummary = null;
-        bestMoveArrow = null;
-        currentQualityTag = null;
         liveStateBackup = null;
         if(analysisFrameConsumer != null){
             analysisFrameConsumer.accept(new AnalysisFrame(-1, 0, null, null, null));
@@ -1519,46 +1351,6 @@ public class Board extends JPanel {
             }
         }
         return "Player";
-    }
-
-    public int screenToBoardCol(int screenCol){
-        return flipBoard ? cols - 1 - screenCol : screenCol;
-    }
-
-    public int screenToBoardRow(int screenRow){
-        return flipBoard ? rows - 1 - screenRow : screenRow;
-    }
-
-    public int boardToScreenCol(int col){
-        return applyFlip(col);
-    }
-
-    public int boardToScreenRow(int row){
-        return applyFlipRow(row);
-    }
-
-    public int boardToPixelX(int col){
-        return coordinateMargin + boardToScreenCol(col) * tileSize;
-    }
-
-    public int boardToPixelY(int row){
-        return coordinateMargin + boardToScreenRow(row) * tileSize;
-    }
-
-    public int pixelToBoardCol(int pixelX){
-        int adjusted = pixelX - coordinateMargin;
-        if(adjusted < 0 || adjusted >= cols * tileSize){
-            return -1;
-        }
-        return screenToBoardCol(adjusted / tileSize);
-    }
-
-    public int pixelToBoardRow(int pixelY){
-        int adjusted = pixelY - coordinateMargin;
-        if(adjusted < 0 || adjusted >= rows * tileSize){
-            return -1;
-        }
-        return screenToBoardRow(adjusted / tileSize);
     }
 
     public String getLastResultTag(){
@@ -1850,25 +1642,12 @@ public class Board extends JPanel {
         return analysisMode;
     }
 
-    public void updateDragPosition(int screenX, int screenY){
-        isDraggingPiece = true;
-        dragScreenX = screenX;
-        dragScreenY = screenY;
-    }
-
-    public void stopDragging(){
-        isDraggingPiece = false;
-    }
-
     private void resetClock(){
         cancelPendingEngineMove();
         whiteClockMillis = initialClockMillis;
         blackClockMillis = initialClockMillis;
         lastClockUpdateMillis = 0L;
         clockStarted = false;
-        if(clockTimer != null){
-            clockTimer.stop();
-        }
         notifyClock();
     }
 
@@ -1878,22 +1657,7 @@ public class Board extends JPanel {
         }
         clockStarted = true;
         lastClockUpdateMillis = System.currentTimeMillis();
-        if(clockTimer != null){
-            clockTimer.stop();
-        }
-        if(serverMode){
-            // Server clocks are settled on every read/move instead of by an EDT timer.
-            notifyClock();
-            return;
-        }
-        clockTimer = new javax.swing.Timer(1000, e -> tickClock());
-        clockTimer.start();
-        notifyClock();
-    }
-
-    private void tickClock(){
-        settleClock();
-        notifyClock();
+        notifyClock(); // settled on every read and move
     }
 
     private synchronized void settleClock(){
@@ -1949,9 +1713,6 @@ public class Board extends JPanel {
     public synchronized void dispose(){
         cancelPendingEngineMove();
         analysisRequestId++;
-        if(clockTimer != null){
-            clockTimer.stop();
-        }
         shutdownEngine();
         analysisExecutor.shutdownNow();
     }
@@ -1967,30 +1728,6 @@ public class Board extends JPanel {
         } catch (IOException e){
             System.err.println("Unable to configure engine: " + e.getMessage());
         }
-    }
-
-    int drawX(int col){
-        return coordinateMargin + applyFlip(col) * tileSize;
-    }
-
-    int drawY(int row){
-        return coordinateMargin + applyFlipRow(row) * tileSize;
-    }
-
-    int boardWidthPx(){
-        return cols * tileSize;
-    }
-
-    int boardHeightPx(){
-        return rows * tileSize;
-    }
-
-    private int applyFlip(int col){
-        return flipBoard ? cols - 1 - col : col;
-    }
-
-    private int applyFlipRow(int row){
-        return flipBoard ? rows - 1 - row : row;
     }
 
     public void setAnalysisFrameConsumer(java.util.function.Consumer<AnalysisFrame> consumer){
@@ -2010,7 +1747,6 @@ public class Board extends JPanel {
         applySnapshotForPointer();
         rebuildDisplayMovesForPointer();
         notifyAnalysisFrame();
-        repaint();
     }
 
     /** Jumps the review to a ply (-1 = starting position); out-of-range values are clamped. */
@@ -2100,7 +1836,7 @@ public class Board extends JPanel {
         }
     }
 
-    static final class MoveHighlight {
+    private static final class MoveHighlight {
         final int fromCol;
         final int fromRow;
         final int toCol;
@@ -2141,7 +1877,6 @@ public class Board extends JPanel {
         final boolean isGameOver;
         final boolean engineEnabled;
         final boolean engineIsWhite;
-        final boolean flipBoard;
         final int enPassantTile;
         final long whiteClockMillis;
         final long blackClockMillis;
@@ -2162,7 +1897,6 @@ public class Board extends JPanel {
                       boolean isGameOver,
                       boolean engineEnabled,
                       boolean engineIsWhite,
-                      boolean flipBoard,
                       int enPassantTile,
                       long whiteClockMillis,
                       long blackClockMillis,
@@ -2182,7 +1916,6 @@ public class Board extends JPanel {
             this.isGameOver = isGameOver;
             this.engineEnabled = engineEnabled;
             this.engineIsWhite = engineIsWhite;
-            this.flipBoard = flipBoard;
             this.enPassantTile = enPassantTile;
             this.whiteClockMillis = whiteClockMillis;
             this.blackClockMillis = blackClockMillis;

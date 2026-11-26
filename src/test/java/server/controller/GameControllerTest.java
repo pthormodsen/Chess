@@ -18,10 +18,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class GameControllerTest {
     private static final String SESSION = "22222222-aaaa-bbbb-cccc-000000000001";
 
-    static {
-        System.setProperty("java.awt.headless", "true");
-    }
-
     @Autowired
     MockMvc mvc;
 

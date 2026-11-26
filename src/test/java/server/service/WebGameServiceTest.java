@@ -30,10 +30,6 @@ class WebGameServiceTest {
     private static final String S1 = "11111111-aaaa-bbbb-cccc-000000000001";
     private static final String S2 = "11111111-aaaa-bbbb-cccc-000000000002";
 
-    static {
-        System.setProperty("java.awt.headless", "true");
-    }
-
     @TempDir
     Path tempDir;
 

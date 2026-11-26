@@ -18,10 +18,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest(classes = ServerApplication.class, properties = "stockfish.path=")
 @AutoConfigureMockMvc
 class PuzzleControllerTest {
-    static {
-        System.setProperty("java.awt.headless", "true");
-    }
-
     @Autowired
     MockMvc mvc;
 

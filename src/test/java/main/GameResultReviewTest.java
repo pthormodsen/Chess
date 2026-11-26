@@ -23,10 +23,6 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  */
 class GameResultReviewTest {
 
-    static {
-        System.setProperty("java.awt.headless", "true");
-    }
-
     @TempDir
     Path tempDir;
 
